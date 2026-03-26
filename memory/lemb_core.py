@@ -10,6 +10,8 @@ import numpy as np
 import faiss
 import torch
 
+from configs.device import DEVICE
+
 
 class EpisodicMemoryBuffer:
     """
