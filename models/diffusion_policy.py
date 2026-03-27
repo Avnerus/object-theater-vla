@@ -10,7 +10,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from diffusers import UNet1DModel
+
+from configs.device import DEVICE
 
 
 class ConditionalUnet1D(nn.Module):

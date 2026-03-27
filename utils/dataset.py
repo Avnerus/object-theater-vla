@@ -10,6 +10,8 @@ import h5py
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from configs.device import DEVICE
+
 
 class DemonstrationDataset(Dataset):
     """
@@ -30,11 +32,11 @@ class DemonstrationDataset(Dataset):
         Args:
             hdf5_path: Path to HDF5 file containing demonstrations
             transform: Optional transform function for observations
-            device: Device to load tensors to (None for CPU)
+            device: Device to load tensors to (None for DEVICE global variable)
         """
         self.hdf5_path = hdf5_path
         self.transform = transform
-        self.device = device or torch.device("cpu")
+        self.device = device or DEVICE
         
         # Open HDF5 file
         self.file = h5py.File(hdf5_path, "r")

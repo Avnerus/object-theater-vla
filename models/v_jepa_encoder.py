@@ -10,6 +10,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from configs.device import DEVICE
+
 
 class VJepaPredictor(nn.Module):
     """
