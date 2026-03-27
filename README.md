@@ -28,8 +28,13 @@ object-theater-vla/
 │   ├── diffusion_policy.py   # Diffusion policy
 │   └── __init__.py
 ├── scripts/          # Execution scripts
-│   ├── 01_teleop_demonstrate.py   # Teleop demonstration recorder
-│   ├── 02_autonomous_rollout.py   # Autonomous execution pipeline
+│   ├── 01_teleop_demonstrate.py    # Teleop demonstration recorder
+│   ├── 02_autonomous_rollout.py    # Autonomous execution pipeline
+│   ├── 03_train_diffusion_policy.py # Diffusion policy training
+│   └── __init__.py
+├── utils/            # Utility functions
+│   ├── visualization.py  # Visualization utilities
+│   ├── dataset.py        # Dataset loading utilities
 │   └── __init__.py
 ├── tests/            # Unit tests
 │   └── __init__.py
@@ -64,6 +69,17 @@ python scripts/02_autonomous_rollout.py \
     --num-rollouts 5
 ```
 
+### Training Diffusion Policy
+
+Train the diffusion policy on collected demonstrations:
+
+```bash
+python scripts/03_train_diffusion_policy.py \
+    --dataset data/demonstrations/demonstrations_20260327_120000.h5 \
+    --num-epochs 100 \
+    --batch-size 1
+```
+
 ## Configuration
 
 Configuration is managed via dataclasses in `configs/config.py`. You can:
@@ -80,11 +96,32 @@ config.env.horizon = 2000
 config.memory.retrieval_k = 5
 ```
 
+### Configuration Options
+
+```python
+# Environment config
+config.env.image_size = (224, 224)
+config.env.horizon = 1000
+
+# Memory config
+config.memory.embedding_dim = 768
+config.memory.retrieval_k = 3
+config.memory.retrieval_alpha = 0.5
+
+# Model config
+config.model.vjepa_latent_dim = 1024
+config.model.diffusion_action_dim = 7
+
+# Training config
+config.training.batch_size = 32
+config.training.learning_rate = 1e-4
+```
+
 ## Core Components
 
 ### Environment (`envs/robosuite_sandbox.py`)
 - Panda arm with OSC_POSE controller
-- Tabletop scene with manipulable objects
+- Tabletop scene with manipulable objects (Box, Cylinder, Sphere)
 - RGB camera observations
 - Proprioceptive state output
 
@@ -92,9 +129,10 @@ config.memory.retrieval_k = 5
 - FAISS-based vector database
 - Cosine or Euclidean similarity search
 - Stores: semantic_vector, visual_state, action_trajectory
+- Methods: `add_memory()`, `retrieve_closest_trajectory()`
 
 ### Models (`models/`)
-- **SigLIP**: Text embedding generation (768-dim)
+- **SigLIP**: Text embedding generation (768-dim, normalized)
 - **V-JEPA**: Vision representation + state prediction
 - **Diffusion Policy**: Action sequence generation (16-step horizon)
 
@@ -105,6 +143,7 @@ config.memory.retrieval_k = 5
 - **Config Management**: Dataclasses + YAML support
 - **Device Agnosticism**: Global `DEVICE` variable for PyTorch tensors
 - **Modularity**: Strict separation of concerns
+- **Publication-Ready**: Clean, documented code suitable for research
 
 ## License
 
