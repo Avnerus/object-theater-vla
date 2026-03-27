@@ -1,265 +1,122 @@
 """
-V-JEPA Encoder Wrapper for Object Theater VLA
+V-JEPA 2.1 Encoder Wrapper for Object Theater VLA
 
 Provides a clean interface for vision representation learning using
-Vision Transformer-based V-JEPA architecture.
+the official V-JEPA 2.1 ViT-G (Gigantic) dense feature extractor.
+
+This implementation loads the pre-trained 2-Billion parameter model
+from the facebookresearch/vjepa2 repository via torch.hub and uses
+it as a frozen physical perception engine for downstream diffusion policy conditioning.
 """
 
-from typing import Dict, List, Optional, Tuple, Union
-import numpy as np
 import torch
 import torch.nn as nn
-
-from configs.device import DEVICE
-
-
-class VJepaPredictor(nn.Module):
-    """
-    V-JEPA (Vision-JEPA) Predictor model wrapper.
-    
-    Takes current image and retrieved action trajectory to predict
-    the next latent state. Uses a ViT-B backbone for visual features.
-    
-    Note: This is a placeholder implementation with a dummy forward pass.
-    In a real deployment, you would load pre-trained V-JEPA weights.
-    """
-    
-    def __init__(
-        self,
-        latent_dim: int = 1024,
-        action_dim: int = 7,
-        action_horizon: int = 16,
-        num_layers: int = 4,
-        num_heads: int = 16,
-        mlp_ratio: int = 4,
-        dropout: float = 0.1,
-    ):
-        """
-        Initialize the V-JEPA predictor.
-        
-        Args:
-            latent_dim: Dimension of visual latent states
-            action_dim: Dimension of action vectors (OSC_POSE)
-            action_horizon: Number of actions in trajectory
-            num_layers: Number of transformer layers
-            num_heads: Number of attention heads
-            mlp_ratio: MLP hidden size multiplier
-            dropout: Dropout rate
-        """
-        super().__init__()
-        
-        self.latent_dim = latent_dim
-        self.action_dim = action_dim
-        self.action_horizon = action_horizon
-        
-        # Input projections
-        self.visual_proj = nn.Linear(latent_dim, latent_dim)
-        self.action_proj = nn.Linear(action_dim, latent_dim)
-        
-        # Transformer for cross-modal fusion
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=latent_dim,
-            nhead=num_heads,
-            dim_feedforward=latent_dim * mlp_ratio,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.fusion_transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # Prediction head
-        self.prediction_head = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(latent_dim, latent_dim),
-        )
-        
-        # Output projection
-        self.output_proj = nn.Linear(latent_dim, latent_dim)
-    
-    def forward(
-        self,
-        current_image_tensor: torch.Tensor,
-        retrieved_action_trajectory: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Predict next latent state given current vision and action trajectory.
-        
-        Args:
-            current_image_tensor: Current visual state tensor
-                Shape: (batch_size, latent_dim) or (batch_size, channels, H, W)
-            retrieved_action_trajectory: Retrieved action sequence
-                Shape: (batch_size, action_horizon, action_dim)
-        
-        Returns:
-            Predicted next latent state
-            Shape: (batch_size, latent_dim)
-        """
-        # Process current image (assume it's already a latent vector for now)
-        if current_image_tensor.dim() > 2:
-            # If it's an image tensor, we'd pass through a ViT encoder
-            # For now, flatten spatial dimensions and average
-            batch_size = current_image_tensor.shape[0]
-            current_image_tensor = current_image_tensor.view(batch_size, current_image_tensor.shape[1], -1)
-            current_image_tensor = current_image_tensor.mean(dim=-1)
-        
-        # Project visual features
-        visual_features = self.visual_proj(current_image_tensor)  # (B, latent_dim)
-        
-        # Project and process action trajectory
-        action_features = self.action_proj(retrieved_action_trajectory)  # (B, H, latent_dim)
-        
-        # Concatenate visual feature with action sequence for fusion
-        # Add visual feature as a learnable token
-        visual_token = visual_features.unsqueeze(1)  # (B, 1, latent_dim)
-        fused_input = torch.cat([visual_token, action_features], dim=1)  # (B, H+1, latent_dim)
-        
-        # Apply transformer fusion
-        fused_output = self.fusion_transformer(fused_input)  # (B, H+1, latent_dim)
-        
-        # Take the first token (visual token) for prediction
-        fused_visual = fused_output[:, 0, :]  # (B, latent_dim)
-        
-        # Predict next latent state
-        next_latent = self.prediction_head(fused_visual)  # (B, latent_dim)
-        next_latent = self.output_proj(next_latent)
-        
-        return next_latent
-    
-    @torch.no_grad()
-    def predict(
-        self,
-        current_image_tensor: np.ndarray,
-        retrieved_action_trajectory: np.ndarray,
-        device: str = "cpu",
-    ) -> np.ndarray:
-        """
-        Predict next latent state from numpy arrays.
-        
-        Args:
-            current_image_tensor: Current visual state
-            retrieved_action_trajectory: Retrieved action sequence
-            device: Device to run on
-        
-        Returns:
-            Predicted next latent state
-        """
-        self.to(device)
-        self.eval()
-        
-        # Convert to tensors
-        current_tensor = torch.from_numpy(current_image_tensor).to(device).float()
-        action_tensor = torch.from_numpy(retrieved_action_trajectory).to(device).float()
-        
-        # Run prediction
-        output = self(current_tensor, action_tensor)
-        
-        return output.cpu().numpy()
 
 
 class VJepaEncoder(nn.Module):
     """
-    Vision Transformer (ViT-B) encoder for V-JEPA visual feature extraction.
+    V-JEPA 2.1 ViT-G (Gigantic) dense feature extractor for downstream diffusion policy conditioning.
     
-    This is a simplified ViT implementation. In practice, you would use
-    the official V-JEPA weights from the original repository.
+    This class wraps the official V-JEPA 2.1 Gigantic model (2B parameters) loaded via torch.hub.
+    The model is frozen during initialization and used exclusively for extracting rich spatial
+    latent representations from video frames. These dense feature maps serve as conditioning
+    vectors for the downstream Diffusion Policy network.
+    
+    Device allocation automatically detects and uses CUDA (ROCm) for AMD GPUs or falls back to CPU.
     """
     
-    def __init__(
-        self,
-        image_size: int = 224,
-        patch_size: int = 16,
-        in_channels: int = 3,
-        embed_dim: int = 768,
-        num_layers: int = 12,
-        num_heads: int = 12,
-        mlp_ratio: int = 4,
-    ):
+    def __init__(self) -> None:
         """
-        Initialize the ViT encoder.
+        Initialize the V-JEPA 2.1 encoder with pre-trained Gigantic weights.
         
-        Args:
-            image_size: Input image size
-            patch_size: Patch size for tokenization
-            in_channels: Number of input channels
-            embed_dim: Embedding dimension
-            num_layers: Number of transformer layers
-            num_heads: Number of attention heads
-            mlp_ratio: MLP hidden size multiplier
+        Loads the official V-JEPA 2.1 preprocessor and the ViT-Gigantic-384 model
+        (2-Billion parameters) from facebookresearch/vjepa2 via torch.hub.
+        
+        The encoder is set to eval() mode and all parameters are frozen to enforce
+        the Bias Firewall - this model acts solely as a frozen physical perception engine.
         """
         super().__init__()
         
-        self.image_size = image_size
-        self.patch_size = patch_size
-        self.embed_dim = embed_dim
+        # Determine device: cuda for AMD ROCm (PyTorch uses 'cuda' for ROCm), fallback to cpu
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Patch embedding
-        self.patch_embed = nn.Conv2d(
-            in_channels, embed_dim, kernel_size=patch_size, stride=patch_size
-        )
+        # Load the V-JEPA 2.1 preprocessor from official repository
+        self.processor = torch.hub.load('facebookresearch/vjepa2', 'vjepa2_preprocessor')
         
-        # CLS token
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # Load the 2-Billion parameter Gigantic model at 384 resolution
+        self.encoder = torch.hub.load('facebookresearch/vjepa2', 'vjepa2_1_vit_gigantic_384')
         
-        # Position embeddings
-        num_patches = (image_size // patch_size) ** 2
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+        # Freeze the encoder - enforce Bias Firewall
+        self.encoder.eval()
+        for param in self.encoder.parameters():
+            param.requires_grad = False
         
-        # Transformer layers
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=embed_dim * mlp_ratio,
-            batch_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # Layer norm
-        self.norm = nn.LayerNorm(embed_dim)
+        # Move to appropriate device
+        self.encoder.to(self.device)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    @torch.no_grad()
+    def extract_features(
+        self,
+        video_frames: torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Encode image to latent representation.
+        Extract dense latent representations from a sequence of RGB video frames.
+        
+        Passes the input video through the V-JEPA 2.1 preprocessor and encoder to
+        obtain the rich spatial feature map for downstream diffusion policy conditioning.
         
         Args:
-            x: Input image tensor
-                Shape: (batch_size, 3, image_size, image_size)
+            video_frames: RGB video frames tensor
+                Shape: [batch_size, channels, frames, height, width]
+                Expected format: B, C, T, H, W with values in [0, 255]
         
         Returns:
-            Latent representation
-            Shape: (batch_size, embed_dim)
+            Dense latent representation (feature map)
+            Shape: [batch_size, num_patches, latent_dim] where num_patches = (H/16) * (W/16)
+        
+        Note:
+            The V-JEPA 2.1 Gigantic model processes video frames and outputs dense tokens
+            representing spatial features across the entire frame. These tokens serve as
+            high-fidelity visual conditioning for the Diffusion Policy network.
         """
-        batch_size = x.shape[0]
+        # Process video frames through the preprocessor
+        # The preprocessor handles normalization, resizing, and tensor conversion
+        processed_video = self.processor(video_frames)
         
-        # Patch embedding
-        x = self.patch_embed(x)  # (B, embed_dim, H/P, W/P)
-        x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
+        # Move processed video to the same device as encoder
+        processed_video = processed_video.to(self.device)
         
-        # Add CLS token
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        x = torch.cat([cls_tokens, x], dim=1)
+        # Pass through encoder - returns dense feature map (not just CLS token)
+        # The ViT-Gigantic model outputs all patch tokens for dense conditioning
+        feature_map = self.encoder(processed_video)
         
-        # Add position embeddings
-        x = x + self.pos_embed
-        
-        # Transformer
-        x = self.transformer(x)
-        
-        # Return CLS token embedding
-        return self.norm(x[:, 0])
-
-
-# Test the V-JEPA models
-if __name__ == "__main__":
-    # Test encoder
-    encoder = VJepaEncoder()
-    dummy_image = torch.randn(2, 3, 224, 224)
-    latents = encoder(dummy_image)
-    print(f"V-JEPA Encoder output shape: {latents.shape}")
+        return feature_map
     
-    # Test predictor
-    predictor = VJepaPredictor()
-    current_latent = torch.randn(2, 1024)
-    action_traj = torch.randn(2, 16, 7)
-    next_latent = predictor(current_latent, action_traj)
-    print(f"V-JEPA Predictor output shape: {next_latent.shape}")
+    @torch.no_grad()
+    def extract_features_batched(
+        self,
+        video_frames: torch.Tensor,
+        chunk_size: int = 4,
+    ) -> torch.Tensor:
+        """
+        Extract features with batched processing for memory efficiency.
+        
+        Args:
+            video_frames: RGB video frames tensor
+                Shape: [batch_size, channels, frames, height, width]
+            chunk_size: Number of frames to process at once
+        
+        Returns:
+            Dense latent representation
+            Shape: [batch_size, num_patches, latent_dim]
+        """
+        if video_frames.shape[0] <= chunk_size:
+            return self.extract_features(video_frames)
+        
+        features_list = []
+        for i in range(0, video_frames.shape[0], chunk_size):
+            chunk = video_frames[i:i + chunk_size]
+            features = self.extract_features(chunk)
+            features_list.append(features)
+        
+        return torch.cat(features_list, dim=0)
