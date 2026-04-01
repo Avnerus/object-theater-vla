@@ -1,8 +1,8 @@
 """
 Diffusion Policy for Object Theater VLA
 
-Implements a 1D Conditional UNet for generating action sequences
-conditioned on V-JEPA latent states.
+Implements a 1D Conditional UNet with Cross-Attention for generating action sequences
+conditioned on V-JEPA dense spatial feature maps.
 """
 
 from typing import Dict, List, Optional, Tuple, Union
@@ -14,35 +14,121 @@ import torch.nn.functional as F
 from configs.device import DEVICE
 
 
-class ConditionalUnet1D(nn.Module):
+class CrossAttentionBlock(nn.Module):
     """
-    1D Conditional UNet for diffusion policy.
+    Cross-Attention block for dense spatial conditioning.
     
-    Takes V-JEPA latent states as conditioning and outputs
-    a sequence of action commands.
+    Takes queries from the action sequence and keys/values from
+    the V-JEPA dense feature map to perform spatial conditioning.
     """
     
     def __init__(
         self,
-        input_dim: int = 1024,  # V-JEPA latent dimension
-        output_dim: int = 7,    # Action dimension (OSC_POSE)
-        horizon: int = 16,      # Action horizon
-        dim: int = 256,
-        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
-        condition_dim: int = 1024,
-        condition_type: str = "concat",
+        action_dim: int,
+        condition_dim: int,
+        num_heads: int = 8,
+        context_dim: Optional[int] = None,
     ):
         """
-        Initialize the conditional UNet.
+        Initialize the cross-attention block.
         
         Args:
-            input_dim: Input feature dimension
+            action_dim: Dimension of the action sequence (Query dimension)
+            condition_dim: Dimension of the V-JEPA feature map (Key/Value dimension)
+            num_heads: Number of attention heads
+            context_dim: Optional dimension to project context to (defaults to action_dim)
+        """
+        super().__init__()
+        
+        self.num_heads = num_heads
+        self.scale = (action_dim // num_heads) ** -0.5
+        
+        # Project condition (V-JEPA features) to key and value
+        self.condition_to_kv = nn.Linear(condition_dim, action_dim * 2, bias=False)
+        
+        # Project action (query) to query
+        self.action_to_q = nn.Linear(action_dim, action_dim, bias=False)
+        
+        # Output projection
+        self.to_out = nn.Linear(action_dim, action_dim)
+        
+        # Optional context dimension projection
+        self.context_dim = context_dim if context_dim is not None else action_dim
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        condition: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Apply cross-attention conditioning.
+        
+        Args:
+            x: Action sequence (Query)
+                Shape: (batch_size, seq_len, action_dim)
+            condition: V-JEPA dense feature map (Key/Value)
+                Shape: (batch_size, num_patches, condition_dim)
+        
+        Returns:
+            Conditioned action sequence
+            Shape: (batch_size, seq_len, action_dim)
+        """
+        batch_size, seq_len, action_dim = x.shape
+        
+        # Project query from action sequence
+        q = self.action_to_q(x)  # (B, seq_len, action_dim)
+        
+        # Project key and value from condition
+        kv = self.condition_to_kv(condition)  # (B, num_patches, action_dim * 2)
+        k, v = torch.chunk(kv, 2, dim=-1)  # Each: (B, num_patches, action_dim)
+        
+        # Reshape for multi-head attention
+        q = q.reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)  # (B, heads, seq_len, head_dim)
+        k = k.reshape(batch_size, -1, self.num_heads, -1).transpose(1, 2)  # (B, heads, num_patches, head_dim)
+        v = v.reshape(batch_size, -1, self.num_heads, -1).transpose(1, 2)  # (B, heads, num_patches, head_dim)
+        
+        # Compute attention scores
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, heads, seq_len, num_patches)
+        attn = attn.softmax(dim=-1)
+        
+        # Apply attention to values
+        out = attn @ v  # (B, heads, seq_len, head_dim)
+        out = out.transpose(1, 2).reshape(batch_size, seq_len, -1)  # (B, seq_len, action_dim)
+        out = self.to_out(out)  # (B, seq_len, action_dim)
+        
+        return out
+
+
+class ConditionalUnet1D(nn.Module):
+    """
+    1D Conditional UNet with Cross-Attention for diffusion policy.
+    
+    Uses dense V-JEPA feature maps via Cross-Attention for spatial conditioning
+    instead of flat vector concatenation. The action sequence acts as Query,
+    and the V-JEPA feature map acts as Key and Value.
+    """
+    
+    def __init__(
+        self,
+        input_dim: int = 7,       # Action dimension (OSC_POSE)
+        output_dim: int = 7,      # Action dimension (OSC_POSE)
+        horizon: int = 16,        # Action horizon
+        dim: int = 256,
+        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+        condition_dim: int = 1024,  # V-JEPA latent dimension (per patch)
+        num_heads: int = 8,
+    ):
+        """
+        Initialize the conditional UNet with Cross-Attention.
+        
+        Args:
+            input_dim: Input action dimension
             output_dim: Output action dimension
             horizon: Length of action sequence
             dim: Base dimension for the network
             dim_mults: Dimension multipliers for each level
-            condition_dim: Conditioning vector dimension
-            condition_type: How to incorporate conditioning ('concat' or 'add')
+            condition_dim: V-JEPA feature dimension per patch
+            num_heads: Number of attention heads for cross-attention
         """
         super().__init__()
         
@@ -50,13 +136,10 @@ class ConditionalUnet1D(nn.Module):
         self.output_dim = output_dim
         self.horizon = horizon
         self.condition_dim = condition_dim
-        self.condition_type = condition_type
+        self.num_heads = num_heads
         
-        # Input projection
+        # Input projection (action sequence -> network dimension)
         self.input_proj = nn.Linear(input_dim, dim)
-        
-        # Condition projection
-        self.condition_proj = nn.Linear(condition_dim, dim)
         
         # Time embedding (for diffusion)
         self.time_emb = nn.Sequential(
@@ -65,7 +148,10 @@ class ConditionalUnet1D(nn.Module):
             nn.Linear(dim * 4, dim),
         )
         
-        # Encoder blocks
+        # Condition projection (map V-JEPA features to network dimension)
+        self.condition_proj = nn.Linear(condition_dim, dim)
+        
+        # Encoder blocks with cross-attention
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
         
@@ -79,6 +165,7 @@ class ConditionalUnet1D(nn.Module):
                 nn.ModuleList([
                     ResnetBlock(dim_in, dim_out, time_embed_dim=dim),
                     ResnetBlock(dim_out, dim_out, time_embed_dim=dim),
+                    CrossAttentionBlock(dim_out, dim, num_heads=num_heads),
                     Residual(Attention(dim_out)),
                     Downsample(dim_out) if not is_last else nn.Identity(),
                 ])
@@ -87,8 +174,9 @@ class ConditionalUnet1D(nn.Module):
         # Middle
         mid_dim = dims[-1]
         self.mid_block1 = ResnetBlock(mid_dim, mid_dim, time_embed_dim=dim)
-        self.mid_block2 = ResnetBlock(mid_dim, mid_dim, time_embed_dim=dim)
+        self.mid_cross_attn = CrossAttentionBlock(mid_dim, dim, num_heads=num_heads)
         self.mid_attn = Residual(Attention(mid_dim))
+        self.mid_block2 = ResnetBlock(mid_dim, mid_dim, time_embed_dim=dim)
         
         # Decoder
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
@@ -97,6 +185,7 @@ class ConditionalUnet1D(nn.Module):
                 nn.ModuleList([
                     ResnetBlock(dim_out * 2, dim_in, time_embed_dim=dim),
                     ResnetBlock(dim_in, dim_in, time_embed_dim=dim),
+                    CrossAttentionBlock(dim_in, dim, num_heads=num_heads),
                     Residual(Attention(dim_in)),
                     Upsample(dim_in) if not is_last else nn.Identity(),
                 ])
@@ -115,15 +204,15 @@ class ConditionalUnet1D(nn.Module):
         condition: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Forward pass.
+        Forward pass with dense Cross-Attention conditioning.
         
         Args:
             x: Input noisy action sequence
                 Shape: (batch_size, horizon, input_dim)
             time: Time step for diffusion
                 Shape: (batch_size,)
-            condition: V-JEPA latent condition
-                Shape: (batch_size, condition_dim)
+            condition: V-JEPA dense feature map
+                Shape: (batch_size, num_patches, condition_dim)
         
         Returns:
             Predicted action sequence
@@ -131,41 +220,39 @@ class ConditionalUnet1D(nn.Module):
         """
         batch_size = x.shape[0]
         
-        # Project input
+        # Project input action sequence
         x = self.input_proj(x)  # (B, horizon, dim)
         x = x.transpose(1, 2)   # (B, dim, horizon)
         
-        # Project and expand condition
-        condition = self.condition_proj(condition)  # (B, dim)
-        condition = condition.unsqueeze(-1)          # (B, dim, 1)
-        condition = condition.expand(-1, -1, x.shape[-1])  # (B, dim, horizon)
-        
-        # Combine condition with input
-        if self.condition_type == "concat":
-            x = torch.cat([x, condition], dim=1)  # (B, dim*2, horizon)
+        # Project and prepare condition for cross-attention
+        # condition: (B, num_patches, condition_dim) -> (B, num_patches, dim)
+        condition = self.condition_proj(condition)
         
         # Time embedding
         time_emb = self.time_emb(time)
         
-        # Encoder
+        # Encoder with cross-attention
         skips = []
-        for block1, block2, attn, downsample in self.encoders:
+        for block1, block2, cross_attn, attn, downsample in self.encoders:
             x = block1(x, time_emb)
             x = block2(x, time_emb)
+            x = cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
             x = attn(x)
             skips.append(x)
             x = downsample(x)
         
-        # Middle
+        # Middle with cross-attention
         x = self.mid_block1(x, time_emb)
+        x = self.mid_cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
         x = self.mid_attn(x)
         x = self.mid_block2(x, time_emb)
         
-        # Decoder
-        for block1, block2, attn, upsample in self.decoders:
+        # Decoder with cross-attention
+        for block1, block2, cross_attn, attn, upsample in self.decoders:
             x = torch.cat([x, skips.pop()], dim=1)
             x = block1(x, time_emb)
             x = block2(x, time_emb)
+            x = cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
             x = attn(x)
             x = upsample(x)
         
@@ -278,10 +365,10 @@ class Downsample(nn.Module):
 
 class DiffusionPolicy:
     """
-    Diffusion Policy wrapper for action generation.
+    Diffusion Policy wrapper for action generation with V-JEPA 2.1 dense conditioning.
     
-    Uses a Conditional UNet to generate action sequences
-    conditioned on V-JEPA latent states.
+    Uses a Conditional UNet with Cross-Attention to generate action sequences
+    conditioned on V-JEPA dense spatial feature maps.
     """
     
     def __init__(
@@ -295,10 +382,10 @@ class DiffusionPolicy:
         Initialize the diffusion policy.
         
         Args:
-            latent_dim: Dimension of V-JEPA latent states
+            latent_dim: Dimension of V-JEPA latent states per patch
             action_dim: Dimension of action vectors
             action_horizon: Number of actions to generate
-            device: Device to run on
+            device: Device to run on (cuda for AMD ROCm, or cpu)
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -308,7 +395,7 @@ class DiffusionPolicy:
         self.action_dim = action_dim
         self.action_horizon = action_horizon
         
-        # Initialize UNet
+        # Initialize UNet with Cross-Attention
         self.model = ConditionalUnet1D(
             input_dim=action_dim,
             output_dim=action_dim,
@@ -399,11 +486,11 @@ class DiffusionPolicy:
         num_inference_steps: int = 50,
     ) -> np.ndarray:
         """
-        Generate action sequence from condition.
+        Generate action sequence from V-JEPA dense condition.
         
         Args:
-            condition: V-JEPA latent state
-                Shape: (batch_size, latent_dim) or (latent_dim,)
+            condition: V-JEPA dense feature map
+                Shape: (batch_size, num_patches, latent_dim) or (num_patches, latent_dim)
             num_inference_steps: Number of denoising steps
         
         Returns:
@@ -413,7 +500,8 @@ class DiffusionPolicy:
         self.model.eval()
         
         condition = torch.from_numpy(condition).to(self.device).float()
-        if condition.dim() == 1:
+        if condition.dim() == 2:
+            # Add batch dimension if not present
             condition = condition.unsqueeze(0)
         
         batch_size = condition.shape[0]
@@ -447,7 +535,10 @@ class DiffusionPolicy:
 if __name__ == "__main__":
     policy = DiffusionPolicy(device="cpu")
     
-    # Test action prediction
-    condition = np.random.randn(2, 1024).astype(np.float32)
+    # Test action prediction with dense V-JEPA conditioning
+    # V-JEPA outputs: [batch_size, num_patches, latent_dim]
+    num_patches = 14 * 14  # Typical for 384x384 input with 16x16 patches
+    condition = np.random.randn(2, num_patches, 1024).astype(np.float32)
     actions = policy.predict_action(condition, num_inference_steps=10)
     print(f"Generated action sequence shape: {actions.shape}")
+    print(f"Condition shape: {condition.shape}")
