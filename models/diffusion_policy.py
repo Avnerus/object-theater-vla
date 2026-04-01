@@ -484,14 +484,18 @@ class DiffusionPolicy:
         self,
         condition: np.ndarray,
         num_inference_steps: int = 50,
+        memory_trajectory: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
-        Generate action sequence from V-JEPA dense condition.
+        Generate action sequence from V-JEPA dense condition with optional trajectory priming.
         
         Args:
             condition: V-JEPA dense feature map
                 Shape: (batch_size, num_patches, latent_dim) or (num_patches, latent_dim)
             num_inference_steps: Number of denoising steps
+            memory_trajectory: Historical trajectory to prime the diffusion process
+                Shape: (action_horizon, action_dim) or (batch_size, action_horizon, action_dim)
+                If provided, the initial noise is biased toward this trajectory
         
         Returns:
             Generated action sequence
@@ -510,6 +514,19 @@ class DiffusionPolicy:
         x = torch.randn(
             batch_size, self.action_horizon, self.action_dim, device=self.device
         )
+        
+        # Apply trajectory priming if memory_trajectory is provided
+        if memory_trajectory is not None:
+            memory_trajectory = torch.from_numpy(memory_trajectory).to(self.device).float()
+            
+            # Handle single trajectory (no batch dimension)
+            if memory_trajectory.dim() == 2:
+                memory_trajectory = memory_trajectory.unsqueeze(0)  # (1, horizon, action_dim)
+            
+            # Normalize memory trajectory to [-1, 1] if needed
+            # Bias the initial noise toward the memory trajectory
+            priming_strength = 0.3  # Weight of memory trajectory in initialization
+            x = (1 - priming_strength) * x + priming_strength * memory_trajectory
         
         # Sample timesteps
         timesteps = np.linspace(0, self.num_timesteps - 1, num_inference_steps)

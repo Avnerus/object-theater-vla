@@ -184,9 +184,10 @@ class AutonomousRollout:
         self,
         condition: torch.Tensor,
         num_inference_steps: int = 20,
+        memory_trajectory: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
-        Generate action sequence using diffusion policy.
+        Generate action sequence using diffusion policy with optional trajectory priming.
         
         Passes the FULL dense condition tensor to the diffusion policy
         for Cross-Attention conditioning.
@@ -195,6 +196,8 @@ class AutonomousRollout:
             condition: V-JEPA dense feature map
                 Shape: [batch_size, num_patches, latent_dim]
             num_inference_steps: Number of denoising steps
+            memory_trajectory: Historical trajectory to prime the diffusion process
+                Shape: [action_horizon, action_dim] or [batch_size, action_horizon, action_dim]
         
         Returns:
             Generated action sequence
@@ -204,6 +207,7 @@ class AutonomousRollout:
             actions = self.diffusion_policy.predict_action(
                 condition.cpu().numpy(),
                 num_inference_steps=num_inference_steps,
+                memory_trajectory=memory_trajectory,
             )
         return actions
     
@@ -261,7 +265,17 @@ class AutonomousRollout:
         # Generate initial action sequence
         if verbose:
             print("Step 3: Initial action planning...")
-        current_actions = self.generate_actions(visual_state)
+        
+        # Check if we have a memory trajectory to prime with
+        memory_results = self.query_memory(visual_state, semantic_target)
+        memory_trajectory = None
+        if memory_results:
+            best_mem_id, best_score, best_trajectory = memory_results[0]
+            memory_trajectory = best_trajectory
+            if verbose:
+                print(f"  Memory match: ID={best_mem_id}, score={best_score:.4f}")
+        
+        current_actions = self.generate_actions(visual_state, memory_trajectory=memory_trajectory)
         generated_sequences.append(current_actions)
         if verbose:
             print(f"  Generated action sequence shape: {current_actions.shape}")
@@ -311,12 +325,16 @@ class AutonomousRollout:
                 # Query memory (optional - for trajectory priming)
                 memory_results = self.query_memory(visual_state, semantic_target)
                 
-                if verbose and memory_results:
-                    best_mem_id, best_score, _ = memory_results[0]
-                    print(f"  Memory match: ID={best_mem_id}, score={best_score:.4f}")
+                # Extract memory trajectory if available
+                memory_trajectory = None
+                if memory_results:
+                    best_mem_id, best_score, best_trajectory = memory_results[0]
+                    memory_trajectory = best_trajectory
+                    if verbose:
+                        print(f"  Memory match: ID={best_mem_id}, score={best_score:.4f}")
                 
-                # Generate new action sequence
-                current_actions = self.generate_actions(visual_state)
+                # Generate new action sequence with trajectory priming
+                current_actions = self.generate_actions(visual_state, memory_trajectory=memory_trajectory)
                 generated_sequences.append(current_actions)
                 action_sequence_index = 0
             else:
