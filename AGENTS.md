@@ -133,6 +133,18 @@ python scripts/02_autonomous_rollout.py \
 - **Config management**: No hardcoded magic numbers
 - **Device agnosticism**: Global `DEVICE` variable used everywhere
 
+## Testing Policy
+
+**⚠️ No Runtime Testing Allowed Until Test Environment is Ready**
+
+The `tests/` directory is currently a placeholder. Until proper test infrastructure is established:
+
+- **Do NOT run runtime tests** (e.g., `python models/diffusion_policy.py`)
+- **Do NOT execute scripts** that require external dependencies
+- **Code changes should be syntactically correct and type-hint complete**
+
+This policy ensures we maintain a clean development workflow without premature integration issues. Once the test environment is ready, this policy will be updated with proper testing guidelines.
+
 ## Dependencies
 
 ```bash
