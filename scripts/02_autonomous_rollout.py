@@ -256,6 +256,7 @@ class AutonomousRollout:
         actions_executed = []
         rewards = []
         generated_sequences = []
+        action_sequence_index = 0  # Track position in current action sequence
         
         # Generate initial action sequence
         if verbose:
@@ -270,8 +271,17 @@ class AutonomousRollout:
             print("Step 4: Executing with Receding Horizon Control...")
         
         for step in range(max_steps):
-            # Pop next action from generated sequence
-            next_action = current_actions[0, 0]  # [0, 0] for batch=1, first action
+            # Validate action sequence index
+            if action_sequence_index >= self.config.model.diffusion_action_horizon:
+                # Need to re-plan - extract new visual state and generate new sequence
+                visual_state = self._extract_visual_state(obs)
+                memory_results = self.query_memory(visual_state, semantic_target)
+                current_actions = self.generate_actions(visual_state)
+                generated_sequences.append(current_actions)
+                action_sequence_index = 0
+            
+            # Pop next action from generated sequence using current index
+            next_action = current_actions[0, action_sequence_index]
             
             # Clip action to valid range
             next_action = np.clip(next_action, -1.0, 1.0)
@@ -293,7 +303,7 @@ class AutonomousRollout:
                     print(f"  Episode terminated at step {step}")
                 break
             
-            # Re-plan every replan_interval steps
+            # Re-plan every replan_interval steps (regardless of sequence index)
             if (step + 1) % replan_interval == 0:
                 # Extract new dense visual state
                 visual_state = self._extract_visual_state(obs)
@@ -301,9 +311,17 @@ class AutonomousRollout:
                 # Query memory (optional - for trajectory priming)
                 memory_results = self.query_memory(visual_state, semantic_target)
                 
+                if verbose and memory_results:
+                    best_mem_id, best_score, _ = memory_results[0]
+                    print(f"  Memory match: ID={best_mem_id}, score={best_score:.4f}")
+                
                 # Generate new action sequence
                 current_actions = self.generate_actions(visual_state)
                 generated_sequences.append(current_actions)
+                action_sequence_index = 0
+            else:
+                # Step through current sequence
+                action_sequence_index += 1
             
             # Control loop timing
             time.sleep(1.0 / self.config.env.control_freq)
