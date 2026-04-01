@@ -1,12 +1,14 @@
 """
 Autonomous Rollout Script for Object Theater VLA
 
-Main inference loop that:
-1. Resets environment
-2. Extracts semantic target from user text via SigLIP
-3. Queries LEMB for historical trajectory
-4. Runs V-JEPA + Diffusion Policy
-5. Executes predicted actions
+Main inference loop with Receding Horizon Control for dense V-JEPA 2.1
+conditioning and Cross-Attention Diffusion Policy.
+
+Implements:
+1. Semantic targeting via SigLIP
+2. Dense visual state extraction (3D feature maps)
+3. Receding horizon execution with periodic re-planning
+4. Memory querying with pooled (1D) features
 """
 
 from typing import Dict, List, Tuple, Optional
@@ -20,20 +22,18 @@ from configs.config import Config, default_config
 from envs.robosuite_sandbox import RobosuiteSandbox
 from memory.lemb_core import EpisodicMemoryBuffer
 from models.siglip_grounding import SigLIPTextEncoder
-from models.v_jepa_encoder import VJepaPredictor, VJepaEncoder
+from models.v_jepa_encoder import VJepaEncoder
 from models.diffusion_policy import DiffusionPolicy
 
 
 class AutonomousRollout:
     """
-    Autonomous execution pipeline for Object Theater VLA.
+    Autonomous execution pipeline with dense VLA architecture.
     
-    Implements the full inference loop:
-    1. Semantic targeting via SigLIP
-    2. Memory retrieval via LEMB
-    3. State prediction via V-JEPA
-    4. Action generation via Diffusion Policy
-    5. Execution via Robosuite
+    Implements Receding Horizon Control:
+    1. Extract dense visual state [batch, patches, dim]
+    2. Periodically (every N steps) re-plan using diffusion policy
+    3. Execute actions one step at a time, re-planning periodically
     """
     
     def __init__(
@@ -74,30 +74,20 @@ class AutonomousRollout:
             device=DEVICE,
         )
         
-        # V-JEPA encoder and predictor
-        self.vjepa_encoder = VJepaEncoder(
-            image_size=self.config.env.image_size[0],
-            embed_dim=self.config.model.vjepa_latent_dim,
-        ).to(DEVICE)
+        # V-JEPA 2.1 dense encoder (Gigantic model)
+        self.vjepa_encoder = VJepaEncoder().to(DEVICE)
         
-        self.vjepa_predictor = VJepaPredictor(
-            latent_dim=self.config.model.vjepa_latent_dim,
-            action_dim=self.config.model.vjepa_action_dim,
-            action_horizon=self.config.model.vjepa_action_horizon,
-        ).to(DEVICE)
-        
-        # Diffusion policy
+        # Diffusion policy with Cross-Attention conditioning
         self.diffusion_policy = DiffusionPolicy(
             latent_dim=self.config.model.vjepa_latent_dim,
             action_dim=self.config.model.diffusion_action_dim,
-            action_horizon=self.config.model.vjepa_action_horizon,
+            action_horizon=self.config.model.diffusion_action_horizon,
             device=DEVICE,
         )
         
-        # Ensure models are in eval mode
+        # Ensure models are in eval mode with torch.no_grad()
         self.siglip.model.eval()
         self.vjepa_encoder.eval()
-        self.vjepa_predictor.eval()
         self.diffusion_policy.model.eval()
     
     def extract_semantic_target(self, text: str) -> np.ndarray:
@@ -114,128 +104,128 @@ class AutonomousRollout:
             embedding = self.siglip.encode_text(text, normalize=True)
         return embedding
     
+    def _extract_visual_state(self, obs: Dict[str, np.ndarray]) -> torch.Tensor:
+        """
+        Extract dense visual state from environment observation.
+        
+        Formats camera image to [batch_size, channels, frames, height, width]
+        and returns dense V-JEPA feature map [batch, num_patches, latent_dim].
+        
+        Args:
+            obs: Environment observation dictionary
+        
+        Returns:
+            Dense visual state tensor
+            Shape: [1, num_patches, 1024] for single frame
+        """
+        # Get camera image
+        image = obs.get("agentview_image", obs.get("robot0_agentview_image"))
+        if image is None:
+            raise ValueError("No camera observation found")
+        
+        # Convert to tensor: [H, W, C] -> [C, H, W]
+        image_tensor = torch.from_numpy(image).to(DEVICE).float()
+        image_tensor = image_tensor.permute(2, 0, 1)  # (C, H, W)
+        
+        # Add frame dimension for video format: [C, H, W] -> [1, C, 1, H, W]
+        image_tensor = image_tensor.unsqueeze(0).unsqueeze(2)  # (1, C, 1, H, W)
+        
+        # Extract dense features via V-JEPA 2.1 encoder
+        with torch.no_grad():
+            dense_features = self.vjepa_encoder.extract_features(image_tensor)
+        
+        return dense_features  # Shape: [1, num_patches, 1024]
+    
+    def pool_visual_state(self, visual_state: torch.Tensor) -> torch.Tensor:
+        """
+        Pool dense visual state to 1D vector for memory querying.
+        
+        Args:
+            visual_state: Dense feature map from V-JEPA
+                Shape: [batch_size, num_patches, latent_dim]
+        
+        Returns:
+            Pooled feature vector
+            Shape: [batch_size, latent_dim]
+        """
+        # Mean-pool across spatial (patch) dimension
+        return visual_state.mean(dim=1)  # (B, latent_dim)
+    
     def query_memory(
         self,
-        visual_state: np.ndarray,
+        visual_state: torch.Tensor,
         semantic_target: np.ndarray,
     ) -> List[Tuple[int, float, np.ndarray]]:
         """
         Query LEMB for similar historical trajectories.
         
+        The dense visual_state is pooled to 1D before memory query.
+        
         Args:
-            visual_state: Current visual state from environment
+            visual_state: Dense visual state from environment
+                Shape: [1, num_patches, 1024]
             semantic_target: Target semantic embedding
         
         Returns:
             List of (memory_id, score, action_trajectory) tuples
         """
+        # Pool dense features to 1D for FAISS compatibility
+        pooled_state = self.pool_visual_state(visual_state).cpu().numpy()
+        
         results = self.memory.retrieve_closest_trajectory(
-            query_state=visual_state,
+            query_state=pooled_state,
             target_semantic_vector=semantic_target,
             k=self.config.memory.retrieval_k,
             alpha=self.config.memory.retrieval_alpha,
         )
         return results
     
-    def predict_next_state(
-        self,
-        current_visual_state: np.ndarray,
-        retrieved_trajectory: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Predict next latent state using V-JEPA.
-        
-        Args:
-            current_visual_state: Current image latent
-            retrieved_trajectory: Retrieved action sequence
-        
-        Returns:
-            Predicted next latent state
-        """
-        with torch.no_grad():
-            current_tensor = torch.from_numpy(current_visual_state).to(DEVICE).float()
-            action_tensor = torch.from_numpy(retrieved_trajectory).to(DEVICE).float()
-            
-            next_latent = self.vjepa_predictor(current_tensor, action_tensor)
-        
-        return next_latent.cpu().numpy()
-    
     def generate_actions(
         self,
-        condition: np.ndarray,
+        condition: torch.Tensor,
+        num_inference_steps: int = 20,
     ) -> np.ndarray:
         """
         Generate action sequence using diffusion policy.
         
+        Passes the FULL dense condition tensor to the diffusion policy
+        for Cross-Attention conditioning.
+        
         Args:
-            condition: V-JEPA latent state for conditioning
+            condition: V-JEPA dense feature map
+                Shape: [batch_size, num_patches, latent_dim]
+            num_inference_steps: Number of denoising steps
         
         Returns:
             Generated action sequence
+            Shape: [batch_size, horizon, action_dim]
         """
         with torch.no_grad():
             actions = self.diffusion_policy.predict_action(
-                condition,
-                num_inference_steps=self.config.model.diffusion_num_inference_steps,
+                condition.cpu().numpy(),
+                num_inference_steps=num_inference_steps,
             )
         return actions
-    
-    def execute_trajectory(
-        self,
-        actions: np.ndarray,
-        verbose: bool = False,
-    ) -> Tuple[List[Dict], List[np.ndarray], List[float]]:
-        """
-        Execute action trajectory in the environment.
-        
-        Args:
-            actions: Action sequence to execute
-            verbose: If True, print execution info
-        
-        Returns:
-            Tuple of (observations, actions, rewards)
-        """
-        observations = []
-        rewards = []
-        
-        # Reset environment
-        obs = self.env.reset()
-        
-        # Execute each action
-        for i, action in enumerate(actions):
-            # Clip action to valid range
-            action = np.clip(action, -1.0, 1.0)
-            
-            # Execute step
-            obs, reward, terminated, truncated, info = self.env.step(action)
-            
-            # Store data
-            observations.append(obs)
-            rewards.append(reward)
-            
-            if verbose:
-                print(f"Step {i}: reward={reward:.4f}, terminated={terminated}")
-            
-            if terminated or truncated:
-                if verbose:
-                    print(f"Episode terminated at step {i}")
-                break
-            
-            # Control loop timing
-            time.sleep(1.0 / self.config.env.control_freq)
-        
-        return observations, rewards
     
     def run_single_rollout(
         self,
         task_description: str,
+        max_steps: int = 200,
+        replan_interval: int = 8,
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """
-        Run a single autonomous rollout.
+        Run a single autonomous rollout with Receding Horizon Control.
+        
+        Implements closed-loop execution:
+        1. Extract dense visual state
+        2. Every N steps, re-plan with diffusion policy
+        3. Execute actions one step at a time
         
         Args:
             task_description: User-provided task description
+            max_steps: Maximum steps per rollout
+            replan_interval: Steps between re-planning
             verbose: If True, print progress
         
         Returns:
@@ -251,111 +241,114 @@ class AutonomousRollout:
             print("Step 1: Extracting semantic target...")
         semantic_target = self.extract_semantic_target(task_description)
         
-        # Step 2: Reset environment and get initial state
+        # Step 2: Reset environment
         if verbose:
             print("Step 2: Resetting environment...")
-        initial_obs = self.env.reset()
-        visual_state = self._extract_visual_state(initial_obs)
+        obs = self.env.reset()
         
-        # Step 3: Query memory
+        # Step 3: Extract initial dense visual state
+        visual_state = self._extract_visual_state(obs)
         if verbose:
-            print("Step 3: Querying memory...")
-        memory_results = self.query_memory(visual_state, semantic_target)
+            print(f"  Visual state shape: {visual_state.shape}")
         
-        if not memory_results:
-            if verbose:
-                print("No similar trajectories found in memory!")
-            return {"success": False, "error": "No memory matches"}
+        # Initialize rollout tracking
+        observations = []
+        actions_executed = []
+        rewards = []
+        generated_sequences = []
         
-        # Use best matching trajectory
-        best_mem_id, best_score, best_trajectory = memory_results[0]
+        # Generate initial action sequence
         if verbose:
-            print(f"  Retrieved trajectory {best_mem_id} (score: {best_score:.4f})")
-        
-        # Step 4: Predict next state
+            print("Step 3: Initial action planning...")
+        current_actions = self.generate_actions(visual_state)
+        generated_sequences.append(current_actions)
         if verbose:
-            print("Step 4: Predicting next state with V-JEPA...")
-        current_latent = self.vjepa_encoder(
-            torch.from_numpy(visual_state).to(DEVICE).float().unsqueeze(0)
-        ).squeeze(0).cpu().numpy()
+            print(f"  Generated action sequence shape: {current_actions.shape}")
         
-        next_latent = self.predict_next_state(current_latent, best_trajectory)
-        
-        # Step 5: Generate actions
+        # Step 4: Receding Horizon Execution Loop
         if verbose:
-            print("Step 5: Generating actions with Diffusion Policy...")
-        actions = self.generate_actions(next_latent)
+            print("Step 4: Executing with Receding Horizon Control...")
         
-        if verbose:
-            print(f"  Generated {len(actions)} action steps")
-        
-        # Step 6: Execute trajectory
-        if verbose:
-            print("Step 6: Executing trajectory...")
-        observations, rewards = self.execute_trajectory(actions, verbose=False)
+        for step in range(max_steps):
+            # Pop next action from generated sequence
+            next_action = current_actions[0, 0]  # [0, 0] for batch=1, first action
+            
+            # Clip action to valid range
+            next_action = np.clip(next_action, -1.0, 1.0)
+            
+            # Execute step in environment
+            obs, reward, terminated, truncated, info = self.env.step(next_action)
+            
+            # Store data
+            observations.append(obs)
+            actions_executed.append(next_action)
+            rewards.append(reward)
+            
+            if verbose and step % 10 == 0:
+                print(f"  Step {step}: reward={reward:.4f}")
+            
+            # Check if task completed
+            if terminated or truncated:
+                if verbose:
+                    print(f"  Episode terminated at step {step}")
+                break
+            
+            # Re-plan every replan_interval steps
+            if (step + 1) % replan_interval == 0:
+                # Extract new dense visual state
+                visual_state = self._extract_visual_state(obs)
+                
+                # Query memory (optional - for trajectory priming)
+                memory_results = self.query_memory(visual_state, semantic_target)
+                
+                # Generate new action sequence
+                current_actions = self.generate_actions(visual_state)
+                generated_sequences.append(current_actions)
+            
+            # Control loop timing
+            time.sleep(1.0 / self.config.env.control_freq)
         
         # Calculate statistics
         total_reward = sum(rewards)
         episode_length = len(observations)
+        num_replans = len(generated_sequences) - 1
         
         if verbose:
             print(f"\nResults:")
             print(f"  Total reward: {total_reward:.4f}")
             print(f"  Episode length: {episode_length} steps")
+            print(f"  Number of replans: {num_replans}")
         
         return {
             "success": True,
             "task_description": task_description,
             "semantic_target": semantic_target,
-            "memory_match_id": best_mem_id,
-            "memory_score": best_score,
             "observations": observations,
+            "actions_executed": actions_executed,
             "rewards": rewards,
             "total_reward": total_reward,
             "episode_length": episode_length,
+            "num_replans": num_replans,
         }
-    
-    def _extract_visual_state(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
-        """
-        Extract visual state from observations.
-        
-        Args:
-            obs: Environment observation dictionary
-        
-        Returns:
-            Visual state representation
-        """
-        # Get camera image
-        image = obs.get("agentview_image", obs.get("robot0_agentview_image"))
-        if image is None:
-            raise ValueError("No camera observation found")
-        
-        # Convert to tensor and normalize
-        image_tensor = torch.from_numpy(image).to(DEVICE).float() / 255.0
-        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
-        
-        # Extract latent via V-JEPA encoder
-        with torch.no_grad():
-            latent = self.vjepa_encoder(image_tensor).squeeze(0).cpu().numpy()
-        
-        return latent
     
     def run_multiple_rollouts(
         self,
         task_descriptions: List[str],
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """
         Run multiple autonomous rollouts.
         
         Args:
             task_descriptions: List of task descriptions
+            **kwargs: Arguments passed to run_single_rollout
         
         Returns:
             List of rollout results
         """
         results = []
         for task in task_descriptions:
-            result = self.run_single_rollout(task)
+            result = self.run_single_rollout(task, **kwargs)
             results.append(result)
         return results
     
@@ -383,6 +376,18 @@ def main():
         help="Number of rollouts to run",
     )
     parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=200,
+        help="Maximum steps per rollout",
+    )
+    parser.add_argument(
+        "--replan-interval",
+        type=int,
+        default=8,
+        help="Steps between re-planning",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose output",
@@ -395,7 +400,12 @@ def main():
     # Run rollouts
     try:
         if args.num_rollouts == 1:
-            result = rollout.run_single_rollout(args.task, verbose=args.verbose)
+            result = rollout.run_single_rollout(
+                args.task,
+                max_steps=args.max_steps,
+                replan_interval=args.replan_interval,
+                verbose=args.verbose,
+            )
             if result["success"]:
                 print(f"\nRollout completed successfully!")
             else:
@@ -403,7 +413,12 @@ def main():
         else:
             for i in range(args.num_rollouts):
                 print(f"\n--- Rollout {i+1}/{args.num_rollouts} ---")
-                result = rollout.run_single_rollout(args.task, verbose=args.verbose)
+                result = rollout.run_single_rollout(
+                    args.task,
+                    max_steps=args.max_steps,
+                    replan_interval=args.replan_interval,
+                    verbose=args.verbose,
+                )
                 print(f"Reward: {result.get('total_reward', 0):.4f}")
     
     except KeyboardInterrupt:
