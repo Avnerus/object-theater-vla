@@ -28,9 +28,11 @@ object-theater-vla/
 │   ├── diffusion_policy.py   # Diffusion policy
 │   └── __init__.py
 ├── scripts/          # Execution scripts
-│   ├── 01_teleop_demonstrate.py    # Teleop demonstration recorder
-│   ├── 02_autonomous_rollout.py    # Autonomous execution pipeline
+│   ├── 01_teleop_demonstrate.py     # Teleop demonstration recorder
+│   ├── 02_autonomous_rollout.py     # Single-process autonomous pipeline
 │   ├── 03_train_diffusion_policy.py # Diffusion policy training
+│   ├── 03_server_brain.py           # ZeroMQ VLA inference server (GPU models)
+│   ├── 04_client_body.py            # ZeroMQ Robosuite client (local 3D GUI)
 │   └── __init__.py
 ├── utils/            # Utility functions
 │   ├── visualization.py  # Visualization utilities
@@ -68,6 +70,33 @@ python scripts/02_autonomous_rollout.py \
     --task "grasp the red box and place it on the left" \
     --num-rollouts 5
 ```
+
+### Distributed Brain/Body Architecture
+
+For production use, the pipeline is split across a client (Body) and server (Brain) using ZeroMQ. The GPU-resident models run on the server while the Robosuite simulation with 3D rendering runs locally.
+
+**Terminal 1 — Start the Brain (GPU server):**
+```bash
+python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+```
+
+**Terminal 2 — Start the Body (local client):**
+```bash
+python scripts/04_client_body.py \
+    --server tcp://<server-ip>:5555 \
+    --task "grasp the red box and place it on the left"
+```
+
+#### Protocol
+
+| Direction | Payload |
+|---|---|
+| Client → Server | `{"type": "init", "task": "<description>"}` |
+| Server → Client | `{"status": "ready"}` |
+| Client → Server | `{"type": "step", "image": <jpeg bytes>}` |
+| Server → Client | `{"action": [dx, dy, dz, roll, pitch, yaw, gripper]}` |
+
+Camera frames are JPEG-compressed before transmission. The server maintains a 16-step action buffer and re-plans every 8 steps (configurable) with receding horizon control and episodic memory retrieval.
 
 ### Training Diffusion Policy
 

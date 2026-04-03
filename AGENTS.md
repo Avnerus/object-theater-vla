@@ -28,9 +28,11 @@ object-theater-vla/
 │   ├── diffusion_policy.py   # Diffusion policy (16-step horizon)
 │   └── __init__.py
 ├── scripts/          # Execution scripts
-│   ├── 01_teleop_demonstrate.py    # Teleop demonstration recorder
-│   ├── 02_autonomous_rollout.py    # Autonomous execution pipeline
-│   └── 03_train_diffusion_policy.py # Diffusion policy training
+│   ├── 01_teleop_demonstrate.py     # Teleop demonstration recorder
+│   ├── 02_autonomous_rollout.py     # Single-process autonomous pipeline
+│   ├── 03_train_diffusion_policy.py # Diffusion policy training
+│   ├── 03_server_brain.py           # ZeroMQ VLA inference server (GPU models)
+│   └── 04_client_body.py            # ZeroMQ Robosuite client (local 3D GUI)
 ├── utils/            # Utility functions
 │   ├── visualization.py  # Plotting, animation, visualization
 │   ├── dataset.py        # HDF5 dataset loading
@@ -119,12 +121,44 @@ python scripts/03_train_diffusion_policy.py \
     --num-epochs 100
 ```
 
-### 3. Run Autonomous Rollout
+### 3. Run Autonomous Rollout (single-process)
 ```bash
 python scripts/02_autonomous_rollout.py \
     --task "grasp the red box" \
     --num-rollouts 5
 ```
+
+### 4. Run Distributed Brain/Body (client-server)
+
+This is the recommended architecture for production — GPU-resident models run
+on the server, while the Robosuite simulation with 3D rendering runs locally.
+
+**Terminal 1 — Start the Brain (GPU server):**
+```bash
+python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+```
+
+**Terminal 2 — Start the Body (local client):**
+```bash
+python scripts/04_client_body.py \
+    --server tcp://<server-ip>:5555 \
+    --task "grasp the red box"
+```
+
+#### Brain ↔ Body Protocol
+
+Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
+
+| Direction | Message |
+|---|---|
+| Client → Server | `{"type": "init", "task": "..."}` |
+| Server → Client | `{"status": "ready"}` |
+| Client → Server | `{"type": "step", "image": <jpeg bytes>}` |
+| Server → Client | `{"action": [dx, dy, dz, roll, pitch, yaw, gripper]}` |
+
+- Camera frames are JPEG-compressed with `cv2.imencode` to save bandwidth.
+- The server re-plans a 16-action trajectory every `replan_interval` steps (default 8).
+- Receding horizon control pops one action per step from the buffer.
 
 ## Code Standards (Phase 3)
 
@@ -158,6 +192,8 @@ h5py>=3.10.0
 numpy>=1.24.0
 matplotlib>=3.7.0
 PyYAML>=6.0
+pyzmq>=25.0.0
+opencv-python>=4.8.0
 ```
 
 ## Future Work
