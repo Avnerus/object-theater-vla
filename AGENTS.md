@@ -63,10 +63,10 @@ object-theater-vla/
 - Methods: `encode_text()`, `encode_batch()`
 
 ### V-JEPA (`models/v_jepa_encoder.py`)
-- Encoder: ViT-B with patch embedding
-- Predictor: Transformer-based state prediction
-- Latent dim: 1024
-- Action dim: 7, Action horizon: 16
+- Model: V-JEPA 2.1 ViT-Gigantic (2B params) via `torch.hub.load('facebookresearch/vjepa2', ...)`
+- Dense patch-level feature extraction (not just CLS token)
+- Frozen encoder — acts as a fixed perception engine
+- Preprocessor: official `vjepa2_preprocessor`
 
 ### Diffusion Policy (`models/diffusion_policy.py`)
 - Architecture: Conditional 1D UNet
@@ -162,7 +162,6 @@ PyYAML>=6.0
 
 ## Future Work
 
-- Implement actual V-JEPA pre-trained weights
 - Add unit tests
 - Create Jupyter notebooks for experimentation
 - Implement reward engineering for training
