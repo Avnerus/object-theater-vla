@@ -11,11 +11,13 @@ Protocol (pickle-serialised dicts):
         {"type": "step", "image": <jpeg-encoded bytes>}
     SERVER → CLIENT
         {"status": "ready"}
-        {"action": [dx, dy, dz, roll, pitch, yaw, gripper]}
+        {"action_chunk": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}
 
-Replan behaviour
-    A fresh 16-step trajectory is generated every *replan_interval* steps
-    (default 8) with full memory querying and trajectory priming.
+Action chunking protocol
+    The server computes a full 16-step action trajectory for each step request
+    and returns the entire chunk as a list of lists. The client buffers these
+    actions locally and consumes them at its native control_freq while fetching
+    the next chunk asynchronously in the background.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,7 +49,6 @@ class BrainServer:
         bind_address: str = "tcp://0.0.0.0:5555",
         config: Config = None,
         memory_buffer: Optional[EpisodicMemoryBuffer] = None,
-        replan_interval: int = 8,
         num_inference_steps: int = 20,
     ):
         """
@@ -57,11 +58,9 @@ class BrainServer:
             bind_address: ZeroMQ bind string for the REP socket.
             config: Hyperparameter configuration.
             memory_buffer: Pre populated episodic memory (or None).
-            replan_interval: Number of simulation steps between full re-plans.
             num_inference_steps: Denoising steps for diffusion sampling.
         """
         self.config = config or default_config
-        self.replan_interval = replan_interval
         self.num_inference_steps = num_inference_steps
 
         # -------- ZeroMQ socket --------
@@ -82,8 +81,6 @@ class BrainServer:
 
         # -------- State (reset on every "init") --------
         self.semantic_target: Optional[np.ndarray] = None
-        self.current_actions: Optional[np.ndarray] = None
-        self.step_counter: int = 0
 
     # ── Model bootstrapping ────────────────────────────────────────────
 
@@ -199,7 +196,7 @@ class BrainServer:
 
         Handled message types:
             init  — receive a task, reset state, reply *ready*.
-            step  — receive a JPEG frame, compute / pop an action, reply it.
+            step  — receive a JPEG frame, compute full action chunk, reply it.
         """
         print("[Brain] Waiting for connections …")
         while True:
@@ -211,8 +208,6 @@ class BrainServer:
                 print(f"[Brain] init  →  task='{task_text}'")
 
                 self.semantic_target = self.extract_semantic_target(task_text)
-                self.current_actions = None
-                self.step_counter = 0
 
                 self.socket.send_pyobj({"status": "ready"})
 
@@ -225,18 +220,13 @@ class BrainServer:
                     image_size=self.config.env.image_size,
                 )
 
-                # Re-plan if at start or every *replan_interval*
-                if self.current_actions is None or self.step_counter % self.replan_interval == 0:
-                    print(f"[Brain] step  →  re-planning (counter={self.step_counter})")
-                    self.current_actions = self._plan(image_tensor)
+                # Plan full trajectory (stateless, runs every step)
+                actions = self._plan(image_tensor)
 
-                # Pop action from buffer
-                idx = self.step_counter % self.replan_interval
-                action = self.current_actions[0, idx]
+                # Squeeze batch dimension and convert to Python list
+                action_chunk = actions.squeeze(0).tolist()  # [horizon, action_dim]
 
-                self.step_counter += 1
-
-                self.socket.send_pyobj({"action": action.tolist()})
+                self.socket.send_pyobj({"action_chunk": action_chunk})
 
             else:
                 self.socket.send_pyobj({"error": f"Unknown message type: {msg_type}"})
@@ -257,13 +247,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Brain — VLA model inference server")
     parser.add_argument("--bind", type=str, default="tcp://0.0.0.0:5555", help="ZeroMQ bind address")
-    parser.add_argument("--replan-interval", type=int, default=8, help="Steps between re-plans")
     parser.add_argument("--inference-steps", type=int, default=20, help="Diffusion denoising steps")
     args = parser.parse_args()
 
     server = BrainServer(
         bind_address=args.bind,
-        replan_interval=args.replan_interval,
         num_inference_steps=args.inference_steps,
     )
 

@@ -145,6 +145,16 @@ python scripts/04_client_body.py \
     --task "grasp the red box"
 ```
 
+#### Asynchronous Action Chunking
+
+To minimize network latency, the Brain/Body protocol uses asynchronous action chunking:
+- The server computes and returns a full 16-action trajectory for each step request
+- The client buffers actions locally and consumes them at native control_freq
+- Background thread fetches the next chunk when buffer falls below `chunk_request_threshold` (default: 8)
+- Zero-velocity fallback action ensures safe stop if network lag empties the buffer
+
+Configuration parameter: `env.chunk_request_threshold` in `configs/config.py`
+
 #### Brain ↔ Body Protocol
 
 Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
@@ -154,11 +164,12 @@ Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
 | Client → Server | `{"type": "init", "task": "..."}` |
 | Server → Client | `{"status": "ready"}` |
 | Client → Server | `{"type": "step", "image": <jpeg bytes>}` |
-| Server → Client | `{"action": [dx, dy, dz, roll, pitch, yaw, gripper]}` |
+| Server → Client | `{"action_chunk": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}` |
 
 - Camera frames are JPEG-compressed with `cv2.imencode` to save bandwidth.
-- The server re-plans a 16-action trajectory every `replan_interval` steps (default 8).
-- Receding horizon control pops one action per step from the buffer.
+- The server computes and returns a full 16-action trajectory for each step request.
+- The client buffers action chunks locally and consumes them at native control_freq.
+- Background thread fetches the next chunk asynchronously when buffer falls below threshold.
 
 ## Code Standards (Phase 3)
 

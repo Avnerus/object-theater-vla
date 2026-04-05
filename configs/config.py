@@ -17,6 +17,7 @@ class EnvironmentConfig:
     horizon: int = 1000
     object_types: Tuple[str, ...] = ("box", "cylinder", "sphere")
     diffusion_action_dim: int = 7
+    chunk_request_threshold: int = 8
 
 
 @dataclass

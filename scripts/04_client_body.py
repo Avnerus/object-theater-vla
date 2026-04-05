@@ -14,10 +14,18 @@ Protocol (pickle-serialised dicts):
         {"type": "step", "image": <jpeg-encoded bytes>}
     SERVER → CLIENT
         {"status": "ready"}
-        {"action": [dx, dy, dz, roll, pitch, yaw, gripper]}
+        {"action_chunk": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}
+
+Asynchronous action chunking
+    The client receives full 16-step action chunks from the server and buffers
+    them locally. Actions are consumed at the native control_freq while the
+    next chunk is fetched asynchronously in a background thread to mask network
+    latency.
 """
 
-from typing import Any, Dict, Optional
+from collections import deque
+from threading import Thread, Lock
+from typing import Any, Deque, Dict, List, Optional
 
 import cv2  # type: ignore[import-untyped]
 import numpy as np
@@ -33,7 +41,13 @@ class BodyClient:
     ZeroMQ REQ client wrapping a local Robosuite environment.
 
     Captures camera observations, compresses them as JPEG, sends to the
-    Brain server, and applies the returned actions step-by-step.
+    Brain server, and applies the returned actions step-by-step using
+    asynchronous action chunking.
+
+    The client maintains an action buffer that is populated by a background
+    thread fetching new chunks from the server. Actions are popped from the
+    buffer at the native control_freq, ensuring smooth execution even under
+    network latency.
     """
 
     def __init__(
@@ -64,6 +78,17 @@ class BodyClient:
             control_freq=self.config.env.control_freq,
             horizon=self.config.env.horizon,
         )
+
+        # -------- Action buffer and threading primitives --------
+        self._action_queue: Deque[List[float]] = deque()
+        self._buffer_lock = Lock()
+        self._fetcher_thread: Optional[Thread] = None
+        self._fetcher_running = False
+        self._fetcher_lock = Lock()
+
+        # -------- Safe fallback action (zero velocity) --------
+        self._zero_action = np.zeros(self.config.env.diffusion_action_dim, dtype=np.float32)
+        self._zero_action[-1] = -1.0  # gripper open
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -97,10 +122,61 @@ class BodyClient:
         return reply
 
     def _send_step(self, jpeg_bytes: bytes) -> Dict[str, Any]:
-        """Send a compressed frame and receive the next action."""
+        """Send a compressed frame and receive the next action chunk."""
         self.socket.send_pyobj({"type": "step", "image": jpeg_bytes})
         reply: Dict[str, Any] = self.socket.recv_pyobj()
         return reply
+
+    # ── Asynchronous action chunking ────────────────────────────────────
+
+    def _fetch_action_chunk(self, jpeg_bytes: bytes) -> None:
+        """
+        Background thread method to fetch an action chunk from the server.
+
+        This method is called from the main loop when the action buffer falls
+        below the threshold. It blocks on network I/O but does not affect the
+        simulation loop since it runs in a separate thread.
+
+        Args:
+            jpeg_bytes: Compressed camera frame to send for action prediction.
+        """
+        try:
+            reply = self._send_step(jpeg_bytes)
+            if "action_chunk" in reply:
+                action_chunk = reply["action_chunk"]
+                if isinstance(action_chunk, list) and len(action_chunk) > 0:
+                    with self._buffer_lock:
+                        self._action_queue.extend(action_chunk)
+        except Exception as e:
+            print(f"[Body] Error fetching action chunk: {e}")
+        finally:
+            with self._fetcher_lock:
+                self._fetcher_running = False
+
+    def _ensure_action_buffer(self, jpeg_frame: np.ndarray) -> None:
+        """
+        Ensure the action buffer has enough actions to avoid starvation.
+
+        If the buffer length falls below the threshold, spawn a background
+        thread to fetch the next chunk asynchronously.
+
+        Args:
+            jpeg_frame: Current camera frame to use for prediction request.
+        """
+        with self._buffer_lock:
+            queue_len = len(self._action_queue)
+
+        if queue_len <= self.config.env.chunk_request_threshold:
+            with self._fetcher_lock:
+                if not self._fetcher_running:
+                    self._fetcher_running = True
+                    jpeg_bytes = self._compress_frame(jpeg_frame)
+                    self._fetcher_thread = Thread(
+                        target=self._fetch_action_chunk,
+                        args=(jpeg_bytes,),
+                        daemon=True,
+                    )
+                    self._fetcher_thread.start()
 
     # ── Execution loop ──────────────────────────────────────────────────
 
@@ -112,11 +188,12 @@ class BodyClient:
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """
-        Run a single episode end-to-end.
+        Run a single episode end-to-end with asynchronous action chunking.
 
         1. Prompt the Brain with the task string.
         2. Reset the physics engine.
-        3. Stream frames, receive actions, step the simulation.
+        3. Stream frames, receive action chunks, buffer locally.
+        4. Consume actions from buffer while fetching next chunk asynchronously.
 
         Args:
             task: Natural-language task description.
@@ -159,15 +236,17 @@ class BodyClient:
             if frame is None:
                 raise KeyError("No camera observation found in observation dict")
 
-            # Compress and send
-            jpeg_bytes = self._compress_frame(frame, quality=jpeg_quality)
-            reply = self._send_step(jpeg_bytes)
+            # Ensure action buffer has enough actions
+            self._ensure_action_buffer(frame)
 
-            if "error" in reply:
-                print(f"[Body] Server error: {reply['error']}")
-                break
+            # Get next action from buffer (or zero action if buffer is empty)
+            with self._buffer_lock:
+                if len(self._action_queue) > 0:
+                    action_list = self._action_queue.popleft()
+                else:
+                    action_list = self._zero_action.tolist()
 
-            action = np.array(reply["action"], dtype=np.float32)
+            action = np.array(action_list, dtype=np.float32)
             action = np.clip(action, -1.0, 1.0)
 
             # Apply action to physics engine
@@ -182,7 +261,7 @@ class BodyClient:
             self.env.render()
 
             if verbose and (step + 1) % 10 == 0:
-                print(f"  Step {step + 1}: reward={reward:.4f}")
+                print(f"  Step {step + 1}: reward={reward:.4f}, buffer_len={len(self._action_queue)}")
 
             # Control loop pacing
             import time
