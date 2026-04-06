@@ -7,6 +7,7 @@
 - **V-JEPA** for vision representation learning
 - **FAISS-based LEMB** for episodic memory retrieval
 - **Diffusion Policy** for action sequence generation
+- **Zero-Bias SLM** for conversational interaction grounded in memory
 
 ### Active Compliance & Dynamic Memory Injection
 
@@ -16,6 +17,15 @@ The system supports real-time human interventions via force-threshold detection:
 - New trajectories are dynamically injected into the Server's Episodic Memory Buffer
 - Memory injection happens without stopping the main simulation loop
 - Keyboard device fallback available for manual triggering
+
+### Tri-Modal Diffusion
+
+The diffusion policy uses three conditioning modalities:
+- **Visual**: V-JEPA dense feature maps via Cross-Attention
+- **Language**: SigLIP semantic embedding fused with time embedding
+- **Memory**: Historical trajectory via trajectory priming
+
+The UNet fuses time embedding with SigLIP semantic embedding, allowing cross-attention (Vision) to be semantically guided when generating actions.
 
 ## Repository Structure
 
@@ -66,9 +76,10 @@ object-theater-vla/
 
 ### Memory (`memory/lemb_core.py`)
 - **FAISS index**: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
-- **Storage**: semantic_vector (768-dim), visual_state, action_trajectory
-- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`
+- **Storage**: semantic_vector (768-dim), visual_state, action_trajectory, task_label
+- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`
 - **Dynamic injection**: New trajectories can be added at runtime via ZeroMQ `add_memory` message
+- **Zero-Bias SLM**: Retrieves all task labels for RAG-based chat responses
 
 ### SigLIP (`models/siglip_grounding.py`)
 - Model: `google/siglip-base-patch16-224`
@@ -91,18 +102,11 @@ object-theater-vla/
 - Diffusion steps: 1000
 - Fuses time + semantic embeddings for semantic guidance in cross-attention
 
-### Intervention Manager (`scripts/04_client_body.py`)
-- Force-threshold detection on `robot0_eef_force` (default: 15N)
-- Records manual guidance using robosuite keyboard device
-- Compresses initial camera frame and sends `add_memory` payload to server
-- Resumes autonomous rollout after memory injection
-- CLI flag: `--no-intervention` to disable
-
-### Tri-Modal Diffusion (`models/diffusion_policy.py`)
-- UNet fuses time embedding with SigLIP semantic embedding (language)
-- Cross-attention (vision) is semantically guided by the fused embedding
-- Memory trajectory provides historical context via trajectory priming
-- All three modalities work together to generate context-aware actions
+### Zero-Bias SLM (`scripts/03_server_brain.py`)
+- Model: Qwen2.5-7B-Instruct (7B params) via Hugging Face pipeline
+- Zero-bias prompt: strictly grounded in Episodic Memory Buffer
+- Returns "I don't know" for unknown queries, asks for physical demonstration
+- Used for intervention task labeling and general robot conversation
 
 ## Configuration
 
@@ -286,6 +290,8 @@ opencv-python>=4.8.0
 - Add more complex object arrangements
 - Expand keyboard/SpaceMouse intervention triggers
 - Support multi-language semantic conditioning
+- Integrate speech synthesis for robot's voice output
+- Add more SLM architectures for different performance/quality tradeoffs
 
 ## Contact
 
@@ -296,4 +302,4 @@ opencv-python>=4.8.0
 ---
 
 **Last Updated**: 2026-04-06  
-**Architecture**: Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection
+**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection
