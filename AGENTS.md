@@ -8,6 +8,15 @@
 - **FAISS-based LEMB** for episodic memory retrieval
 - **Diffusion Policy** for action sequence generation
 
+### Active Compliance & Dynamic Memory Injection
+
+The system supports real-time human interventions via force-threshold detection:
+- Force sensor monitoring detects when a human physically guides the robot
+- Intervention manager records the manual trajectory
+- New trajectories are dynamically injected into the Server's Episodic Memory Buffer
+- Memory injection happens without stopping the main simulation loop
+- Keyboard device fallback available for manual triggering
+
 ## Repository Structure
 
 ```
@@ -32,7 +41,7 @@ object-theater-vla/
 │   ├── 02_autonomous_rollout.py     # Single-process autonomous pipeline
 │   ├── 03_train_diffusion_policy.py # Diffusion policy training
 │   ├── 03_server_brain.py           # ZeroMQ VLA inference server (GPU models)
-│   └── 04_client_body.py            # ZeroMQ Robosuite client (local 3D GUI)
+│   └── 04_client_body.py            # ZeroMQ Robosuite client with intervention support
 ├── utils/            # Utility functions
 │   ├── visualization.py  # Plotting, animation, visualization
 │   ├── dataset.py        # HDF5 dataset loading
@@ -51,13 +60,15 @@ object-theater-vla/
 - **Robot**: Panda arm
 - **Controller**: OSC_POSE (Operational Space Control)
 - **Scene**: Tabletop with 3 manipulable objects (Box, Cylinder, Sphere)
-- **Observations**: RGB camera (agentview), proprioceptive state
+- **Observations**: RGB camera (agentview), proprioceptive state, force-torque sensor
 - **Action space**: 7-dim (dx, dy, dz, roll, pitch, yaw, gripper)
+- **Force sensor**: `robot0_eef_force` observation (3D vector)
 
 ### Memory (`memory/lemb_core.py`)
 - **FAISS index**: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
 - **Storage**: semantic_vector (768-dim), visual_state, action_trajectory
 - **Methods**: `add_memory()`, `retrieve_closest_trajectory()`
+- **Dynamic injection**: New trajectories can be added at runtime via ZeroMQ `add_memory` message
 
 ### SigLIP (`models/siglip_grounding.py`)
 - Model: `google/siglip-base-patch16-224`
@@ -75,6 +86,13 @@ object-theater-vla/
 - Conditioning: V-JEPA latent state
 - Output: 16-step action sequence
 - Diffusion steps: 1000
+
+### Intervention Manager (`scripts/04_client_body.py`)
+- Force-threshold detection on `robot0_eef_force` (default: 15N)
+- Records manual guidance using robosuite keyboard device
+- Compresses initial camera frame and sends `add_memory` payload to server
+- Resumes autonomous rollout after memory injection
+- CLI flag: `--no-intervention` to disable
 
 ## Configuration
 
@@ -128,6 +146,34 @@ python scripts/02_autonomous_rollout.py \
     --num-rollouts 5
 ```
 
+### 3b. Run with Force-Threshold Intervention
+
+Run the distributed Brain/Body system with intervention enabled (default):
+
+```bash
+# Terminal 1: Start the Brain
+python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+
+# Terminal 2: Start the Body with intervention
+python scripts/04_client_body.py \
+    --server tcp://<server-ip>:5555 \
+    --task "grasp the red box"
+```
+
+When the robot encounters resistance (EEF force > 15N), it automatically:
+1. Yields to the human operator
+2. Records the manual guidance trajectory
+3. Injects the new memory into the Brain's episodic buffer
+4. Resumes autonomous operation
+
+To disable intervention:
+```bash
+python scripts/04_client_body.py \
+    --server tcp://<server-ip>:5555 \
+    --task "grasp the red box" \
+    --no-intervention
+```
+
 ### 4. Run Distributed Brain/Body (client-server)
 
 This is the recommended architecture for production — GPU-resident models run
@@ -144,6 +190,18 @@ python scripts/04_client_body.py \
     --server tcp://<server-ip>:5555 \
     --task "grasp the red box"
 ```
+
+#### Force-Threshold Intervention
+
+When the robot detects physical guidance (EEF force > 15N), it automatically:
+1. Yields control to the human
+2. Records the manual trajectory using the keyboard device
+3. Compresses the initial camera frame
+4. Sends `add_memory` payload to the Brain server
+5. The server decodes the frame, extracts V-JEPA features, encodes the task with SigLIP, and adds to LEMB
+6. The robot resumes autonomous rollout with updated memory
+
+The intervention can be disabled with `--no-intervention` flag.
 
 #### Asynchronous Action Chunking
 
@@ -165,11 +223,14 @@ Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
 | Server → Client | `{"status": "ready"}` |
 | Client → Server | `{"type": "step", "image": <jpeg bytes>}` |
 | Server → Client | `{"action_chunk": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}` |
+| Client → Server | `{"type": "add_memory", "task": "...", "initial_image": ..., "action_trajectory": ...}` |
+| Server → Client | `{"status": "memory_added_successfully"}` |
 
 - Camera frames are JPEG-compressed with `cv2.imencode` to save bandwidth.
 - The server computes and returns a full 16-action trajectory for each step request.
 - The client buffers action chunks locally and consumes them at native control_freq.
 - Background thread fetches the next chunk asynchronously when buffer falls below threshold.
+- Memory injection uses the same protocol with longer timeout for V-JEPA + FAISS processing.
 
 ## Code Standards (Phase 3)
 
@@ -219,3 +280,8 @@ opencv-python>=4.8.0
 - **Lead**: Avner (Avnerus-fbear)
 - **Project**: Object Theater VLA
 - **License**: MIT
+
+---
+
+**Last Updated**: 2026-04-06  
+**Architecture**: Active Compliance + Dynamic Memory Injection
