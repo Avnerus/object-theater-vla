@@ -82,10 +82,14 @@ object-theater-vla/
 - Preprocessor: official `vjepa2_preprocessor`
 
 ### Diffusion Policy (`models/diffusion_policy.py`)
-- Architecture: Conditional 1D UNet
-- Conditioning: V-JEPA latent state
+- Architecture: Conditional 1D UNet with Cross-Attention
+- **Tri-Modal Conditioning**:
+  - **Visual**: V-JEPA dense feature maps via Cross-Attention
+  - **Language**: SigLIP semantic embedding fused with time embedding
+  - **Memory**: Historical trajectory via trajectory priming
 - Output: 16-step action sequence
 - Diffusion steps: 1000
+- Fuses time + semantic embeddings for semantic guidance in cross-attention
 
 ### Intervention Manager (`scripts/04_client_body.py`)
 - Force-threshold detection on `robot0_eef_force` (default: 15N)
@@ -93,6 +97,12 @@ object-theater-vla/
 - Compresses initial camera frame and sends `add_memory` payload to server
 - Resumes autonomous rollout after memory injection
 - CLI flag: `--no-intervention` to disable
+
+### Tri-Modal Diffusion (`models/diffusion_policy.py`)
+- UNet fuses time embedding with SigLIP semantic embedding (language)
+- Cross-attention (vision) is semantically guided by the fused embedding
+- Memory trajectory provides historical context via trajectory priming
+- All three modalities work together to generate context-aware actions
 
 ## Configuration
 
@@ -274,6 +284,8 @@ opencv-python>=4.8.0
 - Create Jupyter notebooks for experimentation
 - Implement reward engineering for training
 - Add more complex object arrangements
+- Expand keyboard/SpaceMouse intervention triggers
+- Support multi-language semantic conditioning
 
 ## Contact
 
@@ -284,4 +296,4 @@ opencv-python>=4.8.0
 ---
 
 **Last Updated**: 2026-04-06  
-**Architecture**: Active Compliance + Dynamic Memory Injection
+**Architecture**: Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection
