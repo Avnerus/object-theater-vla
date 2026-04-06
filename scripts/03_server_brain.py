@@ -1,23 +1,24 @@
 """
-Server Brain — VLA Model Inference Daemon
+Server Brain — VLA Model Inference Daemon with Zero-Bias SLM Chat
 
 ZeroMQ REP server that loads all heavy VLA models (SigLIP, V-JEPA, Diffusion
 Policy, Episodic Memory) and serves action predictions to lightweight remote
 clients over the network.
 
+Also implements a Small Language Model (SLM) for zero-bias conversational
+interface, strictly grounded in the Episodic Memory Buffer (LEMB).
+
 Protocol (pickle-serialised dicts):
     CLIENT → SERVER
         {"type": "init", "task": "<task description>"}
         {"type": "step", "image": <jpeg-encoded bytes>}
+        {"type": "chat", "text": "<user message>"}
+        {"type": "add_memory", "task": "...", "initial_image": ..., "action_trajectory": ...}
     SERVER → CLIENT
         {"status": "ready"}
         {"action_chunk": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}
-
-Action chunking protocol
-    The server computes a full 16-step action trajectory for each step request
-    and returns the entire chunk as a list of lists. The client buffers these
-    actions locally and consumes them at its native control_freq while fetching
-    the next chunk asynchronously in the background.
+        {"status": "success", "reply": "<bot response>"}
+        {"status": "memory_added_successfully"}
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -107,6 +108,23 @@ class BrainServer:
         )
         self.diffusion_policy.model.eval()
 
+        print("[Brain] Loading Zero-Bias SLM (Qwen2.5-7B-Instruct) …")
+        try:
+            from transformers import pipeline
+            self.slm = pipeline(
+                "text-generation",
+                model="Qwen/Qwen2.5-7B-Instruct",
+                device=DEVICE,
+                torch_dtype=torch.float16,
+                max_new_tokens=128,
+                temperature=0.7,
+                do_sample=True,
+            )
+            print("[Brain] SLM loaded successfully.")
+        except Exception as e:
+            print(f"[Brain] WARNING: Could not load SLM: {e}")
+            self.slm = None
+
         print("[Brain] All models loaded and set to eval mode.")
 
     # ── Inference helpers ───────────────────────────────────────────────
@@ -151,11 +169,67 @@ class BrainServer:
         pooled = visual_state.mean(dim=1)  # [1, latent_dim]
         return pooled.squeeze(0).cpu().numpy()
 
+    def generate_unbiased_response(self, user_text: str) -> str:
+        """
+        Generate a zero-bias response grounded in the Episodic Memory Buffer.
+
+        The SLM is strictly prompted to only use information from its memory
+        and state that it doesn't know if something isn't in memory.
+
+        Args:
+            user_text: User's chat message.
+
+        Returns:
+            Bot's response string.
+        """
+        if self.slm is None:
+            return "Sorry, I don't have a voice model loaded."
+
+        # Extract all task labels from memory
+        memory_labels = self.memory.get_all_task_labels()
+
+        # Construct the zero-bias system prompt
+        system_prompt = """You are a blank-slate robotic agent in an Object Theater. You have no prior knowledge of the world, physics, or object semantics. You only know what you have been physically taught.
+
+Here is your entire memory database of learned rules: """
+
+        if memory_labels:
+            system_prompt += ", ".join(memory_labels)
+        else:
+            system_prompt += "My memory is empty - I haven't been taught anything yet."
+
+        system_prompt += """
+
+If the user asks you about something in your memory, answer based ONLY on that list.
+If the user asks you about something NOT in your memory, state that you do not know and ask them to physically demonstrate it to you.
+Keep your answers brief, childlike in curiosity, and under 2 sentences.
+
+User: """
+
+        full_prompt = system_prompt + user_text + "\nAssistant:"
+
+        try:
+            # Generate response using the SLM
+            result = self.slm(full_prompt)
+            generated_text = result[0]["generated_text"]
+
+            # Extract just the assistant's response (after "Assistant:")
+            if "Assistant:" in generated_text:
+                response = generated_text.split("Assistant:")[-1].strip()
+            else:
+                response = generated_text.strip()
+
+            return response
+
+        except Exception as e:
+            return f"I'm having trouble thinking. Could you show me instead? (Error: {e})"
+
     def add_memory(
         self,
         task: str,
         initial_image_bytes: bytes,
         action_trajectory: np.ndarray,
+        task_label: str = None,
     ) -> Dict[str, Any]:
         """
         Add a new memory trajectory to the episodic buffer.
@@ -164,11 +238,15 @@ class BrainServer:
             task: Natural-language description of the task.
             initial_image_bytes: JPEG-encoded initial camera frame.
             action_trajectory: Array of shape [horizon, action_dim].
+            task_label: Optional label for memory (defaults to 'task' value).
 
         Returns:
             Status dictionary with success flag.
         """
         try:
+            # Use task_label if provided, otherwise use task
+            final_label = task_label if task_label is not None else task
+
             # 1. Decode image to tensor [1, C, 1, H, W]
             image_tensor = self._decode_image(
                 initial_image_bytes,
@@ -184,11 +262,13 @@ class BrainServer:
             # 4. Encode task using SigLIP
             semantic_vector = self.extract_semantic_target(task)  # [768]
 
-            # 5. Add to episodic memory
+            # 5. Add to episodic memory with task label
             self.memory.add_memory(
+                memory_id=self.memory.total_additions,
                 semantic_vector=semantic_vector,
                 visual_state=pooled_visual,
                 action_trajectory=action_trajectory,
+                task_label=final_label,
             )
 
             return {"status": "memory_added_successfully"}
@@ -242,8 +322,10 @@ class BrainServer:
         Enter the infinite request-reply loop.
 
         Handled message types:
-            init  — receive a task, reset state, reply *ready*.
-            step  — receive a JPEG frame, compute full action chunk, reply it.
+            init    — receive a task, reset state, reply *ready*.
+            step    — receive a JPEG frame, compute full action chunk, reply it.
+            chat    — receive a message, generate SLM response, reply it.
+            add_memory — receive trajectory, inject into episodic buffer, reply status.
         """
         print("[Brain] Waiting for connections …")
         while True:
@@ -275,6 +357,14 @@ class BrainServer:
                 action_chunk = actions.squeeze(0).tolist()  # [horizon, action_dim]
 
                 self.socket.send_pyobj({"action_chunk": action_chunk})
+
+            elif msg_type == "chat":
+                user_text: str = msg.get("text", "")
+                print(f"[Brain] chat  →  text='{user_text}'")
+
+                bot_reply = self.generate_unbiased_response(user_text)
+
+                self.socket.send_pyobj({"status": "success", "reply": bot_reply})
 
             elif msg_type == "add_memory":
                 task: str = msg["task"]

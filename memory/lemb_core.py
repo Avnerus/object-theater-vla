@@ -65,6 +65,7 @@ class EpisodicMemoryBuffer:
         semantic_vector: np.ndarray,
         visual_state: np.ndarray,
         action_trajectory: np.ndarray,
+        task_label: str = None,
     ) -> None:
         """
         Add a new memory chunk to the buffer.
@@ -74,6 +75,7 @@ class EpisodicMemoryBuffer:
             semantic_vector: Text embedding vector (normalized for cosine similarity)
             visual_state: V-JEPA latent representation
             action_trajectory: Sequence of actions [action_horizon, action_dim]
+            task_label: Optional label describing the task (stored for SLM chat)
         """
         if len(self.memory_chunks) >= self.max_memory_chunks:
             # Simple eviction: remove oldest memory
@@ -100,6 +102,7 @@ class EpisodicMemoryBuffer:
             "semantic_vector": semantic_vector.astype(np.float32),
             "visual_state": visual_state.astype(np.float32),
             "action_trajectory": action_trajectory.astype(np.float32),
+            "task_label": task_label,  # Add task label for SLM chat
         }
         
         self.memory_chunks.append(memory_entry)
@@ -182,6 +185,15 @@ class EpisodicMemoryBuffer:
     def get_all_memories(self) -> List[Dict[str, np.ndarray]]:
         """Get all memory chunks."""
         return [mem.copy() for mem in self.memory_chunks]
+
+    def get_all_task_labels(self) -> List[str]:
+        """Get all task labels from stored memories."""
+        labels = []
+        for mem in self.memory_chunks:
+            label = mem.get("task_label")
+            if label is not None:
+                labels.append(label)
+        return labels
     
     def clear(self) -> None:
         """Clear all memories from the buffer."""

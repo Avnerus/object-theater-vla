@@ -183,13 +183,24 @@ class InterventionManager:
         # Compress initial image
         initial_image_bytes = self.client._compress_frame(initial_image)
 
-        # Get task label
+        # Get task label via SLM chat (zero-bias)
         task_label = "intervention_demo"
         if task_prompt:
             try:
-                task_label = input("Intervention complete. What should I call this rule? ").strip()
+                print(f"Recorded {len(recorded_actions)} steps.")
+                print("Asking the robot what to call this rule...")
+
+                # Send chat request to the server
+                self.client.socket.send_pyobj({"type": "chat", "text": "I just finished showing you a new movement. Ask me what to call it."})
+                chat_reply = self.client.socket.recv_pyobj()
+
+                # Print the SLM's dynamically generated question
+                question = chat_reply.get("reply", "What should I call this rule?")
+                print(f"\n[Robot]: {question}\n")
+                task_label = input("> ").strip()
                 if not task_label:
                     task_label = "intervention_demo"
+
             except EOFError:
                 task_label = "intervention_demo"
 
@@ -399,6 +410,7 @@ class InterventionManager:
         observations: list = []
         actions_executed: list = []
         rewards: list = []
+        keyboard_triggered = False  # For keyboard 'T' intervention trigger
 
         for step in range(max_steps):
             # Grab camera frame: typically under 'agentview_image' or 'robot0_agentview_image'
@@ -454,6 +466,19 @@ class InterventionManager:
                     if verbose:
                         print("[Body] Environment reset after intervention.")
                     continue
+
+            # Check for chat trigger (keyboard 'C' key)
+            # In real usage, you'd check keyboard input here
+            # For now, we'll use a simple flag that could be set externally
+            chat_triggered = False  # Placeholder for keyboard input check
+
+            if chat_triggered:
+                print("Chat mode enabled. Type 'exit' to return to control.")
+                user_msg = input("Talk to the robot: ").strip()
+                if user_msg.lower() != "exit":
+                    self.socket.send_pyobj({"type": "chat", "text": user_msg})
+                    chat_reply = self.socket.recv_pyobj()
+                    print(f"[Robot]: {chat_reply['reply']}\n")
 
             # Get next action from buffer (or zero action if buffer is empty)
             with self._buffer_lock:
