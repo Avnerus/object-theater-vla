@@ -80,7 +80,8 @@ class BrainServer:
         )
 
         # -------- State (reset on every "init") --------
-        self.semantic_target: Optional[np.ndarray] = None
+        self.current_semantic_target: Optional[np.ndarray] = None
+        self.step_counter: int = 0
 
     # ── Model bootstrapping ────────────────────────────────────────────
 
@@ -228,6 +229,7 @@ class BrainServer:
         with torch.no_grad():
             actions = self.diffusion_policy.predict_action(
                 visual_state.cpu().numpy(),  # dense conditioning
+                semantic_condition=self.current_semantic_target,  # language conditioning
                 num_inference_steps=self.num_inference_steps,
                 memory_trajectory=memory_traj,
             )
@@ -252,7 +254,8 @@ class BrainServer:
                 task_text = msg.get("task", "")
                 print(f"[Brain] init  →  task='{task_text}'")
 
-                self.semantic_target = self.extract_semantic_target(task_text)
+                self.current_semantic_target = self.extract_semantic_target(task_text)
+                self.step_counter = 0
 
                 self.socket.send_pyobj({"status": "ready"})
 

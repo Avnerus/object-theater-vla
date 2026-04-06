@@ -106,6 +106,11 @@ class ConditionalUnet1D(nn.Module):
     Uses dense V-JEPA feature maps via Cross-Attention for spatial conditioning
     instead of flat vector concatenation. The action sequence acts as Query,
     and the V-JEPA feature map acts as Key and Value.
+    
+    Tri-Modal Conditioning:
+    - Visual: V-JEPA dense feature map (condition)
+    - Language: SigLIP semantic embedding (semantic_condition)
+    - Memory: Historical trajectory (via trajectory priming in DiffusionPolicy)
     """
     
     def __init__(
@@ -116,6 +121,7 @@ class ConditionalUnet1D(nn.Module):
         dim: int = 256,
         dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
         condition_dim: int = 1024,  # V-JEPA latent dimension (per patch)
+        semantic_dim: int = 768,    # SigLIP text embedding dimension
         num_heads: int = 8,
     ):
         """
@@ -128,6 +134,7 @@ class ConditionalUnet1D(nn.Module):
             dim: Base dimension for the network
             dim_mults: Dimension multipliers for each level
             condition_dim: V-JEPA feature dimension per patch
+            semantic_dim: SigLIP text embedding dimension (default: 768)
             num_heads: Number of attention heads for cross-attention
         """
         super().__init__()
@@ -136,6 +143,7 @@ class ConditionalUnet1D(nn.Module):
         self.output_dim = output_dim
         self.horizon = horizon
         self.condition_dim = condition_dim
+        self.semantic_dim = semantic_dim
         self.num_heads = num_heads
         
         # Input projection (action sequence -> network dimension)
@@ -144,6 +152,13 @@ class ConditionalUnet1D(nn.Module):
         # Time embedding (for diffusion)
         self.time_emb = nn.Sequential(
             nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Linear(dim * 4, dim),
+        )
+        
+        # Semantic projection (for language conditioning)
+        self.semantic_proj = nn.Sequential(
+            nn.Linear(semantic_dim, dim * 4),
             nn.GELU(),
             nn.Linear(dim * 4, dim),
         )
@@ -202,17 +217,24 @@ class ConditionalUnet1D(nn.Module):
         x: torch.Tensor,
         time: torch.Tensor,
         condition: torch.Tensor,
+        semantic_condition: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Forward pass with dense Cross-Attention conditioning.
+        Forward pass with tri-modal conditioning (Visual + Language + Memory).
+        
+        Fuses time embedding with semantic (language) embedding, then applies
+        the fused embedding to all ResNet blocks for both cross-attention
+        conditioning (Vision) and action generation.
         
         Args:
             x: Input noisy action sequence
                 Shape: (batch_size, horizon, input_dim)
             time: Time step for diffusion
                 Shape: (batch_size,)
-            condition: V-JEPA dense feature map
+            condition: V-JEPA dense feature map (Visual)
                 Shape: (batch_size, num_patches, condition_dim)
+            semantic_condition: SigLIP text embedding (Language)
+                Shape: (batch_size, semantic_dim)
         
         Returns:
             Predicted action sequence
@@ -228,30 +250,34 @@ class ConditionalUnet1D(nn.Module):
         # condition: (B, num_patches, condition_dim) -> (B, num_patches, dim)
         condition = self.condition_proj(condition)
         
-        # Time embedding
-        time_emb = self.time_emb(time)
+        # Fuse Time Embedding and Semantic Embedding
+        time_emb = self.time_emb(time)        # (B, dim)
+        sem_emb = self.semantic_proj(semantic_condition)  # (B, dim)
         
-        # Encoder with cross-attention
+        # Broadcasting the semantic intent to all ResNet blocks
+        fused_emb = time_emb + sem_emb        # (B, dim)
+        
+        # Encoder with cross-attention (using fused_emb)
         skips = []
         for block1, block2, cross_attn, attn, downsample in self.encoders:
-            x = block1(x, time_emb)
-            x = block2(x, time_emb)
+            x = block1(x, fused_emb)
+            x = block2(x, fused_emb)
             x = cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
             x = attn(x)
             skips.append(x)
             x = downsample(x)
         
-        # Middle with cross-attention
-        x = self.mid_block1(x, time_emb)
+        # Middle with cross-attention (using fused_emb)
+        x = self.mid_block1(x, fused_emb)
         x = self.mid_cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
         x = self.mid_attn(x)
-        x = self.mid_block2(x, time_emb)
+        x = self.mid_block2(x, fused_emb)
         
-        # Decoder with cross-attention
+        # Decoder with cross-attention (using fused_emb)
         for block1, block2, cross_attn, attn, upsample in self.decoders:
             x = torch.cat([x, skips.pop()], dim=1)
-            x = block1(x, time_emb)
-            x = block2(x, time_emb)
+            x = block1(x, fused_emb)
+            x = block2(x, fused_emb)
             x = cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
             x = attn(x)
             x = upsample(x)
@@ -401,6 +427,7 @@ class DiffusionPolicy:
             output_dim=action_dim,
             horizon=action_horizon,
             condition_dim=latent_dim,
+            semantic_dim=768,  # SigLIP text embedding dimension
         )
         self.model.to(device)
         
@@ -453,10 +480,11 @@ class DiffusionPolicy:
         x: torch.Tensor,
         t: torch.Tensor,
         condition: torch.Tensor,
+        semantic_condition: torch.Tensor,
     ) -> torch.Tensor:
-        """Single denoising step."""
-        # Predict noise
-        noise_pred = self.model(x, t, condition)
+        """Single denoising step with tri-modal conditioning."""
+        # Predict noise using tri-modal inputs (Visual + Language)
+        noise_pred = self.model(x, t, condition, semantic_condition)
         
         # Compute x_0 prediction
         alphas_cumprod_t = self.alphas_cumprod[t]
@@ -483,15 +511,23 @@ class DiffusionPolicy:
     def predict_action(
         self,
         condition: np.ndarray,
+        semantic_condition: np.ndarray,
         num_inference_steps: int = 50,
         memory_trajectory: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
-        Generate action sequence from V-JEPA dense condition with optional trajectory priming.
+        Generate action sequence from V-JEPA dense condition and semantic (language) condition.
+        
+        Tri-Modal Generation:
+        - Visual: V-JEPA dense feature map (condition)
+        - Language: SigLIP semantic embedding (semantic_condition)
+        - Memory: Historical trajectory (via trajectory priming)
         
         Args:
             condition: V-JEPA dense feature map
                 Shape: (batch_size, num_patches, latent_dim) or (num_patches, latent_dim)
+            semantic_condition: SigLIP text embedding
+                Shape: (batch_size, semantic_dim) or (semantic_dim,)
             num_inference_steps: Number of denoising steps
             memory_trajectory: Historical trajectory to prime the diffusion process
                 Shape: (action_horizon, action_dim) or (batch_size, action_horizon, action_dim)
@@ -507,6 +543,11 @@ class DiffusionPolicy:
         if condition.dim() == 2:
             # Add batch dimension if not present
             condition = condition.unsqueeze(0)
+        
+        # Format Semantic Condition
+        sem_tensor = torch.from_numpy(semantic_condition).to(self.device).float()
+        if sem_tensor.dim() == 1:
+            sem_tensor = sem_tensor.unsqueeze(0)
         
         batch_size = condition.shape[0]
         
@@ -535,7 +576,7 @@ class DiffusionPolicy:
         with torch.no_grad():
             for t in timesteps:
                 t_tensor = torch.full((batch_size,), int(t), device=self.device, dtype=torch.long)
-                x = self.p_sample(x, t_tensor, condition)
+                x = self.p_sample(x, t_tensor, condition, sem_tensor)
         
         return x.cpu().numpy()
     
