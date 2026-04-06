@@ -36,7 +36,168 @@ from configs.config import Config, default_config
 from envs.robosuite_sandbox import RobosuiteSandbox
 
 
-class BodyClient:
+# ── Intervention Manager ──────────────────────────────────────────────────
+
+
+class InterventionManager:
+    """
+    Handles force-threshold intervention detection and recording.
+
+    Monitors EEF force sensor and keyboard input to detect when a human
+    takes physical control of the robot. Records the manual trajectory
+    and can inject it into the Brain's episodic memory.
+    """
+
+    def __init__(
+        self,
+        client: "BodyClient",
+        force_threshold: float = 15.0,
+        device: str = "keyboard",
+    ):
+        """
+        Initialize the Intervention Manager.
+
+        Args:
+            client: Parent BodyClient instance.
+            force_threshold: Force magnitude threshold for intervention trigger.
+            device: Intervention control device ("keyboard" or "spacemouse").
+        """
+        self.client = client
+        self.force_threshold = force_threshold
+        self.device_type = device
+        self._keyboard_device: Optional[Any] = None
+        self._spacemouse_device: Optional[Any] = None
+        self._takeover_active = False
+
+        if device == "keyboard":
+            try:
+                from robosuite.devices import Keyboard
+                self._keyboard_device = Keyboard()
+                print("[InterventionManager] Keyboard device initialized.")
+            except ImportError:
+                print("[InterventionManager] WARNING: robosuite.devices.Keyboard not available.")
+                self._keyboard_device = None
+
+    def check_force_sensor(self, obs: Dict[str, np.ndarray]) -> bool:
+        """
+        Check if force threshold is exceeded.
+
+        Args:
+            obs: Current environment observation dict.
+
+        Returns:
+            True if force magnitude exceeds threshold.
+        """
+        eef_force = obs.get("robot0_eef_force", np.zeros(3))
+        force_magnitude = np.linalg.norm(eef_force)
+        return force_magnitude > self.force_threshold
+
+    def start_takeover(self) -> None:
+        """Initialize takeover mode."""
+        self._takeover_active = True
+        if self._keyboard_device is not None:
+            self._keyboard_device.start_control()
+        print("INTERVENTION DETECTED: Yielding to human...")
+
+    def stop_takeover(self) -> None:
+        """End takeover mode."""
+        self._takeover_active = False
+        if self._keyboard_device is not None:
+            self._keyboard_device.stop_control()
+
+    def read_takeover_action(self) -> Optional[np.ndarray]:
+        """
+        Read action from takeover device.
+
+        Returns:
+            Action array or None if device unavailable.
+        """
+        if self._keyboard_device is not None:
+            action = self._keyboard_device.get_input()
+            if action is not None:
+                return action
+        return None
+
+    def record_intervention(
+        self,
+        initial_obs: Dict[str, np.ndarray],
+        task_prompt: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Record a human demonstration during intervention.
+
+        Args:
+            initial_obs: Observation at intervention start.
+            task_prompt: If True, prompt user for task label.
+
+        Returns:
+            Dictionary with initial_image, action_trajectory, and task label,
+            or None if intervention failed.
+        """
+        # Get initial camera frame
+        initial_image = initial_obs.get("agentview_image") or initial_obs.get("robot0_eye_in_hand_image")
+        if initial_image is None:
+            print("[InterventionManager] ERROR: No camera observation found.")
+            return None
+
+        recorded_actions: List[List[float]] = []
+
+        print("[InterventionManager] Recording manual guidance...")
+        print("  - Use keyboard/SpaceMouse to guide the robot")
+        print("  - Press 'ENTER' or release deadman to finish")
+
+        # Enter recording loop
+        while True:
+            # Read device action
+            action = self.read_takeover_action()
+            if action is None:
+                # Fallback: generate small random action for keyboard
+                action = np.zeros(7, dtype=np.float32)
+                action[6] = -1.0  # gripper open
+
+            # Apply action to environment
+            obs, reward, terminated, truncated, info = self.client.env.step(action)
+            self.client.env.render()
+
+            # Record action
+            recorded_actions.append(action.tolist())
+
+            # Check for termination (user signals done via keyboard or timeout)
+            if terminated or truncated:
+                print("[InterventionManager] Episode terminated during intervention.")
+                break
+
+            # Small delay to respect control frequency
+            import time
+            time.sleep(1.0 / self.client.config.env.control_freq)
+
+            # Simple timeout: limit intervention to reasonable length
+            if len(recorded_actions) >= self.client.config.env.horizon:
+                print("[InterventionManager] Intervention reached max length.")
+                break
+
+        if len(recorded_actions) == 0:
+            print("[InterventionManager] No actions recorded.")
+            return None
+
+        # Compress initial image
+        initial_image_bytes = self.client._compress_frame(initial_image)
+
+        # Get task label
+        task_label = "intervention_demo"
+        if task_prompt:
+            try:
+                task_label = input("Intervention complete. What should I call this rule? ").strip()
+                if not task_label:
+                    task_label = "intervention_demo"
+            except EOFError:
+                task_label = "intervention_demo"
+
+        return {
+            "initial_image": initial_image_bytes,
+            "action_trajectory": np.array(recorded_actions, dtype=np.float32),
+            "task": task_label,
+        }
     """
     ZeroMQ REQ client wrapping a local Robosuite environment.
 
@@ -186,20 +347,23 @@ class BodyClient:
         max_steps: int = 200,
         jpeg_quality: int = 85,
         verbose: bool = True,
+        intervention_enabled: bool = True,
     ) -> Dict[str, Any]:
         """
-        Run a single episode end-to-end with asynchronous action chunking.
+        Run a single episode end-to-end with asynchronous action chunking and optional intervention.
 
         1. Prompt the Brain with the task string.
         2. Reset the physics engine.
         3. Stream frames, receive action chunks, buffer locally.
         4. Consume actions from buffer while fetching next chunk asynchronously.
+        5. Monitor for force-threshold intervention and record human guidance.
 
         Args:
             task: Natural-language task description.
             max_steps: Maximum simulation steps before auto-terminating.
             jpeg_quality: JPEG compression quality for camera frames.
             verbose: If *True*, print progress information.
+            intervention_enabled: If *True*, enable force-threshold intervention mode.
 
         Returns:
             Dictionary with observations, actions, rewards, and metadata.
@@ -218,14 +382,20 @@ class BodyClient:
         if verbose:
             print("[Body] Brain is ready.")
 
-        # ── 2. Reset environment ──
+        # ── 2. Initialize InterventionManager if enabled ──
+        intervention_manager: Optional[InterventionManager] = None
+        if intervention_enabled:
+            intervention_manager = InterventionManager(self)
+            print("[Body] InterventionManager initialized.")
+
+        # ── 3. Reset environment ──
         if verbose:
             print("[Body] Resetting environment …")
         obs = self.env.reset()
         if verbose:
             print("[Body] Environment reset.")
 
-        # ── 3. Simulation loop ──
+        # ── 4. Simulation loop ──
         observations: list = []
         actions_executed: list = []
         rewards: list = []
@@ -238,6 +408,52 @@ class BodyClient:
 
             # Ensure action buffer has enough actions
             self._ensure_action_buffer(frame)
+
+            # Check for force-threshold intervention trigger
+            if intervention_manager is not None:
+                force_triggered = intervention_manager.check_force_sensor(obs)
+
+                # Keyboard 'T' key can also trigger intervention (simulated via flag)
+                # In real usage, you'd check keyboard input here
+                # For now, we'll use a simple flag that could be set externally
+                keyboard_triggered = False  # Placeholder for keyboard input check
+
+                if force_triggered or keyboard_triggered:
+                    intervention_manager.start_takeover()
+
+                    # Record the intervention
+                    intervention_data = intervention_manager.record_intervention(obs)
+
+                    if intervention_data is not None:
+                        # ── Dynamic Memory Injection ──
+                        print("[Body] Injecting intervention into Brain's episodic memory...")
+
+                        payload = {
+                            "type": "add_memory",
+                            "task": intervention_data["task"],
+                            "initial_image": intervention_data["initial_image"],
+                            "action_trajectory": intervention_data["action_trajectory"].tolist(),
+                        }
+
+                        # Set longer timeout for memory injection (V-JEPA + FAISS take time)
+                        self.socket.setsockopt(zmq.LINGER, -1)
+                        self.socket.send_pyobj(payload)
+
+                        reply = self.socket.recv_pyobj()
+                        self.socket.setsockopt(zmq.LINGER, 0)
+
+                        if reply.get("status") == "memory_added_successfully":
+                            print("Memory injected. Resuming autonomous rollout.")
+                        else:
+                            print(f"[Body] WARNING: Memory injection failed: {reply}")
+
+                    intervention_manager.stop_takeover()
+
+                    # Reset obs after intervention (we're in a new episode phase)
+                    obs = self.env.reset()
+                    if verbose:
+                        print("[Body] Environment reset after intervention.")
+                    continue
 
             # Get next action from buffer (or zero action if buffer is empty)
             with self._buffer_lock:
@@ -336,6 +552,11 @@ def main() -> None:
         action="store_true",
         help="Enable verbose output",
     )
+    parser.add_argument(
+        "--no-intervention",
+        action="store_true",
+        help="Disable force-threshold intervention mode",
+    )
     args = parser.parse_args()
 
     client = BodyClient(server_address=args.server)
@@ -346,6 +567,7 @@ def main() -> None:
             max_steps=args.max_steps,
             jpeg_quality=args.jpeg_quality,
             verbose=args.verbose,
+            intervention_enabled=not args.no_intervention,
         )
         if result["success"]:
             print(f"\nEpisode completed successfully!  Total reward: {result['total_reward']:.4f}")

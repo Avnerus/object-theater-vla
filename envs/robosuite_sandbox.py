@@ -163,9 +163,9 @@ class RobosuiteSandbox:
     def get_proprioceptive_state(self) -> Dict[str, np.ndarray]:
         """
         Get current proprioceptive state.
-        
+
         Returns:
-            Dictionary with joint positions, velocities, and gripper state.
+            Dictionary with joint positions, velocities, gripper state, and EEF force.
         """
         obs = self.env._get_observations()
         return {
@@ -175,6 +175,8 @@ class RobosuiteSandbox:
             "gripper_qvel": obs["robot0_gripper_qvel"],
             "eef_pos": obs["robot0_eef_pos"],
             "eef_quat": obs["robot0_eef_quat"],
+            # Access force sensor through the robot's proprioceptive state
+            "robot0_eef_force": obs.get("robot0_eef_force", np.zeros(3)),
         }
     
     def get_camera_observation(self) -> Dict[str, np.ndarray]:
@@ -189,6 +191,16 @@ class RobosuiteSandbox:
             "agentview_image": obs["robot0_agentview_image"],
             "robot0_eye_in_hand_image": obs["robot0_eye_in_hand_image"],
         }
+
+    def get_force_sensor(self) -> np.ndarray:
+        """
+        Get current force torque sensor reading at the end-effector.
+
+        Returns:
+            3D force vector [Fx, Fy, Fz] in Newtons.
+        """
+        obs = self.env._get_observations()
+        return obs.get("robot0_eef_force", np.zeros(3))
     
     def set_object_positions(self, positions: np.ndarray) -> None:
         """

@@ -150,6 +150,51 @@ class BrainServer:
         pooled = visual_state.mean(dim=1)  # [1, latent_dim]
         return pooled.squeeze(0).cpu().numpy()
 
+    def add_memory(
+        self,
+        task: str,
+        initial_image_bytes: bytes,
+        action_trajectory: np.ndarray,
+    ) -> Dict[str, Any]:
+        """
+        Add a new memory trajectory to the episodic buffer.
+
+        Args:
+            task: Natural-language description of the task.
+            initial_image_bytes: JPEG-encoded initial camera frame.
+            action_trajectory: Array of shape [horizon, action_dim].
+
+        Returns:
+            Status dictionary with success flag.
+        """
+        try:
+            # 1. Decode image to tensor [1, C, 1, H, W]
+            image_tensor = self._decode_image(
+                initial_image_bytes,
+                image_size=self.config.env.image_size,
+            )
+
+            # 2. Extract dense visual features using V-JEPA
+            visual_state = self._extract_visual_state(image_tensor)  # [1, num_patches, latent_dim]
+
+            # 3. Mean-pool to 1D for FAISS
+            pooled_visual = self._pool_visual_state(visual_state)  # [latent_dim]
+
+            # 4. Encode task using SigLIP
+            semantic_vector = self.extract_semantic_target(task)  # [768]
+
+            # 5. Add to episodic memory
+            self.memory.add_memory(
+                semantic_vector=semantic_vector,
+                visual_state=pooled_visual,
+                action_trajectory=action_trajectory,
+            )
+
+            return {"status": "memory_added_successfully"}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     def _query_memory(
         self,
         pooled_visual: np.ndarray,
@@ -227,6 +272,26 @@ class BrainServer:
                 action_chunk = actions.squeeze(0).tolist()  # [horizon, action_dim]
 
                 self.socket.send_pyobj({"action_chunk": action_chunk})
+
+            elif msg_type == "add_memory":
+                task: str = msg["task"]
+                initial_image_bytes: bytes = msg["initial_image"]
+                action_trajectory: np.ndarray = np.array(msg["action_trajectory"], dtype=np.float32)
+
+                print(f"[Brain] add_memory → task='{task}', trajectory_shape={action_trajectory.shape}")
+
+                # Ensure action_trajectory has correct shape [horizon, action_dim]
+                expected_shape = (self.config.env.horizon, self.config.env.diffusion_action_dim)
+                if action_trajectory.shape != expected_shape:
+                    print(f"[Brain] WARNING: action_trajectory shape {action_trajectory.shape} != {expected_shape}")
+
+                result = self.add_memory(
+                    task=task,
+                    initial_image_bytes=initial_image_bytes,
+                    action_trajectory=action_trajectory,
+                )
+
+                self.socket.send_pyobj(result)
 
             else:
                 self.socket.send_pyobj({"error": f"Unknown message type: {msg_type}"})
