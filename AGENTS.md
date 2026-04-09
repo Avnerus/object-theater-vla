@@ -66,6 +66,33 @@ object-theater-vla/
 
 ## Core Components
 
+### SLM Grammar Parser & Unified LEMB Routing (Recent Update - 2026-04-09)
+
+The server brain now implements a grammar-based task decomposition system:
+
+**Grammar Parsing (`scripts/03_server_brain.py`)**
+- New `parse_grammar()` method uses the 8B-parameter SLM to extract verbs (actions) and nouns (objects)
+- Returns structured JSON: `{"verb": "action_word", "nouns": ["object_1", "object_2"]}`
+- Robust fallback: returns original text as verb if parsing fails
+
+**Targeted Memory Retrieval**
+- **Verb retrieval**: Generic action trajectory for trajectory priming
+  - Stores in `self.priming_trajectory` (used by diffusion policy)
+- **Noun retrieval**: Object-specific visual patches for cross-attention
+  - Stores in `self.target_visual_patches` (future multimodal conditioning)
+
+**Updated LEMB Return Signature (`memory/lemb_core.py`)**
+- Changed `retrieve_closest_trajectory()` to return 4-tuple:
+  `(memory_id, score, action_trajectory, visual_state)`
+- Visual state now accessible for noun-based target conditioning
+
+**Modified Flow**
+1. Client sends task: `"grasp the red box"`
+2. Server parses: `{"verb": "grasp", "nouns": ["box", "red"]}`
+3. Verb query → priming trajectory for diffusion policy
+4. Noun queries → visual patches for target conditioning
+5. Diffusion policy generates actions with grammar-guided priming
+
 ### Environment (`envs/robosuite_sandbox.py`)
 - **Robot**: Panda arm
 - **Controller**: OSC_POSE (Operational Space Control)
@@ -106,6 +133,7 @@ object-theater-vla/
 - Model: Qwen2.5-7B-Instruct (7B params) via Hugging Face pipeline
 - Zero-bias prompt: strictly grounded in Episodic Memory Buffer
 - Returns "I don't know" for unknown queries, asks for physical demonstration
+- **Grammar Parsing**: Extracts verbs/nouns for targeted memory routing
 - Used for intervention task labeling and general robot conversation
 
 ## Configuration
@@ -284,6 +312,14 @@ opencv-python>=4.8.0
 
 ## Future Work
 
+### Immediate (Phase 4)
+- Implement SLM-based grammar parsing for task decomposition
+- Add targeted LEMB retrieval using parsed verbs (action primitives) and nouns (object targets)
+- Integrate priming trajectory from verb retrieval into diffusion policy
+- Support visual patch extraction from noun retrieval for cross-attention conditioning
+- Add `target_visual_patches` to server brain state for future multimodal conditioning
+
+### Medium-Term
 - Add unit tests
 - Create Jupyter notebooks for experimentation
 - Implement reward engineering for training
@@ -293,6 +329,29 @@ opencv-python>=4.8.0
 - Integrate speech synthesis for robot's voice output
 - Add more SLM architectures for different performance/quality tradeoffs
 
+### Long-Term
+- Implement hierarchical task planning with grammar-based decomposition
+- Add multi-objective optimization for action generation
+- Support continuous learning with experience replay
+- Extend to multi-robot coordination scenarios
+- Integrate real-world hardware deployment pipeline
+
+## Future Work: Pedagogical HRI & Advanced Intent Routing
+
+To elevate the Object Theater from a reactive execution system to a proactive learning companion, future development will focus on two major architectural upgrades to the Server Brain:
+
+### 1. The Curriculum Director (Pedagogical Orchestration)
+* **Concept:** A background orchestration layer that bridges formal education (e.g., a primary school JSON curriculum) with the "Protégé Effect" (learning by teaching).
+* **Mechanism:** Instead of lecturing the user, the Director monitors the live 3D scene via V-JEPA and secretly injects "Curiosity Goals" into the SLM's system prompt based on the curriculum objectives.
+* **Result:** The robot acts as a curious student. If the curriculum dictates "Addition," the SLM asks the child, *"What happens if we push these blocks together?"* This prompts the child to physically demonstrate the concept, creating a zero-bias, child-led pedagogical loop.
+
+### 2. The Cognitive Fork (Intent Classification)
+* **Concept:** A zero-shot SLM routing layer that acts as the robot's prefrontal cortex, determining whether a user's input requires physical movement or conversation.
+* **Mechanism:** Before processing text, the SLM classifies the input as either an `ACTION` (physical command) or `DIALOGUE` (conversation/teaching).
+  * **Path A (Action):** The SLM acts as a subconscious grammar parser. It extracts verbs and nouns, queries the unified LEMB for generic trajectories and specific visual patches, and fires the Tri-Modal Diffusion Policy to move the arm.
+  * **Path B (Dialogue):** Physical execution is paused. The SLM acts as the Conscious Protégé, checking the Curriculum Director's current goal and speaking back to the user.
+* **Result:** Seamlessly unifies the system's physical Vision-Language-Action (VLA) capabilities with natural conversational AI, preventing conflicting server states and maintaining a fluid human-robot interaction.
+
 ## Contact
 
 - **Lead**: Avner (Avnerus-fbear)
@@ -301,5 +360,5 @@ opencv-python>=4.8.0
 
 ---
 
-**Last Updated**: 2026-04-06  
-**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection
+**Last Updated**: 2026-04-09  
+**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing

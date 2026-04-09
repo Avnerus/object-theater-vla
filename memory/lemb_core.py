@@ -173,7 +173,21 @@ class EpisodicMemoryBuffer:
         
         # Sort by score (higher is better)
         results.sort(key=lambda x: x[1], reverse=True)
-        return results
+        
+        # Return 4-tuple: (memory_id, score, action_trajectory, visual_state)
+        results_with_visual = []
+        for memory_id, score, traj in results:
+            # Find the memory entry to get visual_state
+            for mem in self.memory_chunks:
+                if mem["memory_id"] == memory_id:
+                    results_with_visual.append((
+                        memory_id,
+                        score,
+                        traj,
+                        mem["visual_state"]
+                    ))
+                    break
+        return results_with_visual
     
     def get_memory_by_id(self, memory_id: int) -> Optional[Dict[str, np.ndarray]]:
         """Retrieve a specific memory chunk by ID."""

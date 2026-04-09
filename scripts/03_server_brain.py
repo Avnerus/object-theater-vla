@@ -83,6 +83,8 @@ class BrainServer:
         # -------- State (reset on every "init") --------
         self.current_semantic_target: Optional[np.ndarray] = None
         self.step_counter: int = 0
+        self.priming_trajectory: Optional[np.ndarray] = None
+        self.target_visual_patches: List[np.ndarray] = []
 
     # ── Model bootstrapping ────────────────────────────────────────────
 
@@ -126,6 +128,40 @@ class BrainServer:
             self.slm = None
 
         print("[Brain] All models loaded and set to eval mode.")
+
+    # ── SLM Grammar Parser ────────────────────────────────────────────
+
+    def parse_grammar(self, user_text: str) -> dict:
+        """Uses the SLM to extract the core verb and target nouns from a command."""
+        if self.slm is None:
+            return {"verb": user_text, "nouns": []}
+        
+        prompt = f"""
+        You are a linguistics parser for a robotic arm.
+        Extract the primary action verb and the target objects (nouns) from the user's command.
+        Output ONLY a valid JSON dictionary in this exact format:
+        {{"verb": "action_word", "nouns": ["object_1", "object_2"]}}
+        
+        Command: "{user_text}"
+        """
+        try:
+            # Generate response using the SLM pipeline
+            response = self.slm(prompt, max_new_tokens=50)[0]['generated_text']
+            
+            # Robustly extract JSON from the output
+            import json
+            import re
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            print(f"[Brain] Grammar parsing error: {e}")
+            
+        # Fallback if parsing fails
+        return {"verb": user_text, "nouns": []}
 
     # ── Inference helpers ───────────────────────────────────────────────
 
@@ -286,7 +322,7 @@ User: """
         """
         results = self.memory.retrieve_closest_trajectory(
             query_state=pooled_visual.reshape(1, -1),
-            target_semantic_vector=self.semantic_target,  # type: ignore[arg-type]
+            target_semantic_vector=self.current_semantic_target,
             k=k,
             alpha=self.config.memory.retrieval_alpha,
         )
@@ -298,13 +334,15 @@ User: """
     def _plan(self, image_tensor: torch.Tensor) -> np.ndarray:
         """
         Full re-plan: extract visual state, query memory, run diffusion.
+        Uses priming trajectory from verb retrieval and semantic target.
 
         Returns a fresh action buffer of shape [1, horizon, action_dim].
         """
         visual_state = self._extract_visual_state(image_tensor)  # [1, patches, 1024]
         pooled = self._pool_visual_state(visual_state)
 
-        memory_traj = self._query_memory(pooled)
+        # Use priming trajectory from grammar parsing (verb-based retrieval)
+        memory_traj = self.priming_trajectory
 
         with torch.no_grad():
             actions = self.diffusion_policy.predict_action(
@@ -335,8 +373,35 @@ User: """
             if msg_type == "init":
                 task_text = msg.get("task", "")
                 print(f"[Brain] init  →  task='{task_text}'")
-
+                
+                # 1. Parse the Grammar
+                parsed_command = self.parse_grammar(task_text)
+                print(f"[Brain] Parsed Command: {parsed_command}")
+                
+                # 2. Retrieve Verb (Action Trajectory) - generic action
+                verb_text = parsed_command.get("verb", task_text)
+                verb_semantic = self.siglip.encode_text(verb_text, normalize=True)
+                
+                # Dummy visual state for verb query (we only care about semantics)
+                dummy_visual = np.zeros((1, self.config.model.vjepa_latent_dim), dtype=np.float32)
+                verb_results = self.memory.retrieve_closest_trajectory(dummy_visual, verb_semantic)
+                
+                # Extract just the trajectory from the verb memory (4-tuple: id, score, traj, visual_state)
+                self.priming_trajectory = verb_results[0][2] if verb_results else None
+                
+                # 3. Retrieve Nouns (Visual Patches) - specific object targets
+                self.target_visual_patches = []
+                for noun in parsed_command.get("nouns", []):
+                    noun_semantic = self.siglip.encode_text(noun, normalize=True)
+                    noun_results = self.memory.retrieve_closest_trajectory(dummy_visual, noun_semantic)
+                    
+                    if noun_results:
+                        # Index 3 is the visual_state in the 4-tuple
+                        self.target_visual_patches.append(noun_results[0][3])
+                
+                # 4. Save the full semantic target for the UNet's time-embedding fusion
                 self.current_semantic_target = self.extract_semantic_target(task_text)
+                
                 self.step_counter = 0
 
                 self.socket.send_pyobj({"status": "ready"})

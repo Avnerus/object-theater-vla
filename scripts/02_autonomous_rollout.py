@@ -270,7 +270,7 @@ class AutonomousRollout:
         memory_results = self.query_memory(visual_state, semantic_target)
         memory_trajectory = None
         if memory_results:
-            best_mem_id, best_score, best_trajectory = memory_results[0]
+            best_mem_id, best_score, best_trajectory, _ = memory_results[0]
             memory_trajectory = best_trajectory
             if verbose:
                 print(f"  Memory match: ID={best_mem_id}, score={best_score:.4f}")
