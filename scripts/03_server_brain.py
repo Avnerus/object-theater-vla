@@ -347,7 +347,7 @@ User: """
         with torch.no_grad():
             actions = self.diffusion_policy.predict_action(
                 visual_state.cpu().numpy(),  # dense conditioning
-                semantic_condition=self.current_semantic_target,  # language conditioning
+                semantic_condition=self.current_semantic_target.cpu().numpy() if torch.is_tensor(self.current_semantic_target) else self.current_semantic_target,           # language conditioning
                 num_inference_steps=self.num_inference_steps,
                 memory_trajectory=memory_traj,
             )
