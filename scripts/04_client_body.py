@@ -209,6 +209,9 @@ class InterventionManager:
             "action_trajectory": np.array(recorded_actions, dtype=np.float32),
             "task": task_label,
         }
+
+
+class BodyClient:
     """
     ZeroMQ REQ client wrapping a local Robosuite environment.
 
@@ -461,10 +464,12 @@ class InterventionManager:
 
                     intervention_manager.stop_takeover()
 
-                    # Reset obs after intervention (we're in a new episode phase)
-                    obs = self.env.reset()
+                    # Flush the old action buffer so we don't execute stale movements
+                    with self._buffer_lock:
+                        self._action_queue.clear()
+                        
                     if verbose:
-                        print("[Body] Environment reset after intervention.")
+                        print("[Body] Resuming autonomy from current physical state.")
                     continue
 
             # Check for chat trigger (keyboard 'C' key)
