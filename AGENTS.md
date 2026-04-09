@@ -48,8 +48,7 @@ object-theater-vla/
 │   └── __init__.py
 ├── scripts/          # Execution scripts
 │   ├── 01_teleop_demonstrate.py     # Teleop demonstration recorder
-│   ├── 02_autonomous_rollout.py     # Single-process autonomous pipeline
-│   ├── 03_train_diffusion_policy.py # Diffusion policy training
+│   ├── 02_train_diffusion_policy.py # Diffusion policy training
 │   ├── 03_server_brain.py           # ZeroMQ VLA inference server (GPU models)
 │   └── 04_client_body.py            # ZeroMQ Robosuite client with intervention support
 ├── utils/            # Utility functions
@@ -176,19 +175,12 @@ python scripts/01_teleop_demonstrate.py --device keyboard
 
 ### 2. Train Diffusion Policy
 ```bash
-python scripts/03_train_diffusion_policy.py \
+python scripts/02_train_diffusion_policy.py \
     --dataset data/demonstrations/demonstrations_*.h5 \
     --num-epochs 100
 ```
 
-### 3. Run Autonomous Rollout (single-process)
-```bash
-python scripts/02_autonomous_rollout.py \
-    --task "grasp the red box" \
-    --num-rollouts 5
-```
-
-### 3b. Run with Force-Threshold Intervention
+### 3. Run with Force-Threshold Intervention
 
 Run the distributed Brain/Body system with intervention enabled (default):
 

@@ -29,10 +29,9 @@ object-theater-vla/
 │   └── __init__.py
 ├── scripts/          # Execution scripts
 │   ├── 01_teleop_demonstrate.py     # Teleop demonstration recorder
-│   ├── 02_autonomous_rollout.py     # Single-process autonomous pipeline
-│   ├── 03_train_diffusion_policy.py # Diffusion policy training
+│   ├── 02_train_diffusion_policy.py # Diffusion policy training
 │   ├── 03_server_brain.py           # ZeroMQ VLA inference server (GPU models)
-│   ├── 04_client_body.py            # ZeroMQ Robosuite client (local 3D GUI)
+│   └── 04_client_body.py            # ZeroMQ Robosuite client (local 3D GUI)
 │   └── __init__.py
 ├── utils/            # Utility functions
 │   ├── visualization.py  # Visualization utilities
@@ -60,16 +59,6 @@ Controls:
 - `e` - End recording
 - `w` - Write demonstrations to HDF5 file
 - `q` - Quit
-
-### Autonomous Rollout
-
-Execute tasks using the trained VLA pipeline:
-
-```bash
-python scripts/02_autonomous_rollout.py \
-    --task "grasp the red box and place it on the left" \
-    --num-rollouts 5
-```
 
 ### Distributed Brain/Body Architecture
 
