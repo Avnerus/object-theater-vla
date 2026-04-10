@@ -48,7 +48,7 @@ class BrainServer:
     def __init__(
         self,
         bind_address: str = "tcp://0.0.0.0:5555",
-        config: Config = None,
+        config: Optional[Config] = None,
         memory_buffer: Optional[EpisodicMemoryBuffer] = None,
         num_inference_steps: int = 20,
     ):
@@ -93,7 +93,7 @@ class BrainServer:
         print("[Brain] Loading SigLIP text encoder …")
         self.siglip = SigLIPTextEncoder(
             model_name=self.config.model.siglip_model_name,
-            device=DEVICE,
+            device=str(DEVICE),
         )
         self.siglip.model.eval()
 
@@ -105,8 +105,8 @@ class BrainServer:
         self.diffusion_policy = DiffusionPolicy(
             latent_dim=self.config.model.vjepa_latent_dim,
             action_dim=self.config.model.diffusion_action_dim,
-            action_horizon=self.config.model.diffusion_action_horizon,
-            device=DEVICE,
+            action_horizon=self.config.model.vjepa_action_horizon,
+            device=str(DEVICE),
         )
         self.diffusion_policy.model.eval()
 
@@ -265,7 +265,7 @@ User: """
         task: str,
         initial_image_bytes: bytes,
         action_trajectory: np.ndarray,
-        task_label: str = None,
+        task_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Add a new memory trajectory to the episodic buffer.
@@ -319,16 +319,19 @@ User: """
     ) -> Optional[np.ndarray]:
         """
         Query episodic memory and return the best action trajectory, or None.
+        
+        Note:
+            Returns the 4th element (visual_state) of the 4-tuple.
         """
         results = self.memory.retrieve_closest_trajectory(
             query_state=pooled_visual.reshape(1, -1),
-            target_semantic_vector=self.current_semantic_target,
+            target_semantic_vector=self.current_semantic_target if self.current_semantic_target is not None else np.zeros((768,), dtype=np.float32),
             k=k,
             alpha=self.config.memory.retrieval_alpha,
         )
-        if results:
-            _, _, traj = results[0]
-            return traj  # [horizon, action_dim]
+        if results and len(results[0]) >= 3:
+            # 4-tuple: (memory_id, score, action_trajectory, visual_state)
+            return results[0][2]  # [horizon, action_dim]
         return None
 
     def _plan(self, image_tensor: torch.Tensor) -> np.ndarray:
@@ -345,9 +348,10 @@ User: """
         memory_traj = self.priming_trajectory
 
         with torch.no_grad():
+            semantic_condition = self.current_semantic_target.cpu().numpy() if torch.is_tensor(self.current_semantic_target) else (self.current_semantic_target if self.current_semantic_target is not None else np.zeros((768,), dtype=np.float32))
             actions = self.diffusion_policy.predict_action(
                 visual_state.cpu().numpy(),  # dense conditioning
-                semantic_condition=self.current_semantic_target.cpu().numpy() if torch.is_tensor(self.current_semantic_target) else self.current_semantic_target,           # language conditioning
+                semantic_condition=semantic_condition,           # language conditioning
                 num_inference_steps=self.num_inference_steps,
                 memory_trajectory=memory_traj,
             )
@@ -387,7 +391,7 @@ User: """
                 verb_results = self.memory.retrieve_closest_trajectory(dummy_visual, verb_semantic)
                 
                 # Extract just the trajectory from the verb memory (4-tuple: id, score, traj, visual_state)
-                self.priming_trajectory = verb_results[0][2] if verb_results else None
+                self.priming_trajectory = verb_results[0][2] if verb_results and len(verb_results[0]) >= 3 else None
                 
                 # 3. Retrieve Nouns (Visual Patches) - specific object targets
                 self.target_visual_patches = []
@@ -395,7 +399,7 @@ User: """
                     noun_semantic = self.siglip.encode_text(noun, normalize=True)
                     noun_results = self.memory.retrieve_closest_trajectory(dummy_visual, noun_semantic)
                     
-                    if noun_results:
+                    if noun_results and len(noun_results[0]) >= 4:
                         # Index 3 is the visual_state in the 4-tuple
                         self.target_visual_patches.append(noun_results[0][3])
                 
