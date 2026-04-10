@@ -97,8 +97,8 @@ class BrainServer:
         )
         self.siglip.model.eval()
 
-        print("[Brain] Loading V-JEPA 2.1 encoder …")
-        self.vjepa_encoder = VJepaEncoder().to(DEVICE)
+        print("[Brain] Loading V-JEPA 2.1 encoder (Gigantic) …")
+        self.vjepa_encoder = VJepaEncoder(model_name="vjepa2_1_vit_gigantic_384").to(DEVICE)
         self.vjepa_encoder.eval()
 
         print("[Brain] Loading Diffusion Policy …")
