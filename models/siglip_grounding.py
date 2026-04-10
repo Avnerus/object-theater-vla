@@ -4,10 +4,10 @@ SigLIP Text Encoder Wrapper for Object Theater VLA
 Provides a clean interface for generating semantic embeddings from text.
 """
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, cast
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, SiglipModel, SiglipTextConfig
 
 
 class SigLIPTextEncoder:
@@ -41,12 +41,19 @@ class SigLIPTextEncoder:
         
         # Load tokenizer and model
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
-        self.model.to(device)
-        self.model.eval()
+        self.model: SiglipModel = AutoModel.from_pretrained(model_name)
+        self.model.to(device)  # type: ignore[attr-defined]
+        self.model.eval()  # type: ignore[union-attr]
         
         # Get embedding dimension from config
-        self.embedding_dim = self.model.config.projection_dim
+        # SigLIP uses projection_size (defaults to hidden_size if None)
+        # After __post_init__, text_config is guaranteed to be a SiglipTextConfig object
+        text_config = self.model.config.text_config
+        if isinstance(text_config, dict):
+            text_config = SiglipTextConfig(**text_config)
+        assert isinstance(text_config, SiglipTextConfig)
+        # projection_size is the output dimension (e.g., 768 for base model)
+        self.embedding_dim = text_config.projection_size if text_config.projection_size is not None else text_config.hidden_size
         
         # Ensure model is in eval mode and frozen
         for param in self.model.parameters():
@@ -83,10 +90,22 @@ class SigLIPTextEncoder:
         # Move to device
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
-        # Get embeddings
+        # Get embeddings (get_text_features returns pooled embeddings directly)
         outputs = self.model.get_text_features(**inputs)
         
-        # Normalize if requested
+        # Cast outputs to tensor (SigLIP get_text_features returns FloatTensor)
+        # We handle potential BaseModelOutputWithPooling for compatibility
+        if isinstance(outputs, tuple):
+            # If it's a tuple, extract the first element (pooler_output)
+            outputs = cast(torch.Tensor, outputs[0] if len(outputs) > 0 else None)
+        elif not isinstance(outputs, torch.Tensor):
+            # BaseModelOutputWithPooling case - extract pooler_output
+            if hasattr(outputs, 'pooler_output'):
+                outputs = cast(torch.Tensor, outputs.pooler_output)
+            else:
+                raise TypeError(f"Expected torch.Tensor or BaseModelOutputWithPooling, got {type(outputs)}")
+        
+        # Normalize if requested (SigLIP embeddings are already L2-normalized)
         if normalize:
             outputs = torch.nn.functional.normalize(outputs, p=2, dim=-1)
         
@@ -123,7 +142,7 @@ class SigLIPTextEncoder:
     
     def __call__(self, text: Union[str, List[str]]) -> np.ndarray:
         """Callable alias for encode_text."""
-        return self.encode_text(text)
+        return self.encode_text(text)  # type: ignore[call-arg]
     
     def get_embedding_dim(self) -> int:
         """Get the embedding dimension."""
