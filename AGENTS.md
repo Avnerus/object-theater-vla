@@ -275,15 +275,75 @@ Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
 
 ## Testing Policy
 
-**⚠️ No Runtime Testing Allowed Until Test Environment is Ready**
+### Type Checking with Pyright
 
-The `tests/` directory is currently a placeholder. Until proper test infrastructure is established:
+All code must pass static type checking with Pyright before being considered complete:
 
-- **Do NOT run runtime tests** (e.g., `python models/diffusion_policy.py`)
-- **Do NOT execute scripts** that require external dependencies
-- **Code changes should be syntactically correct and type-hint complete**
+```bash
+uv run pyright models/<module_name>.py
+```
 
-This policy ensures we maintain a clean development workflow without premature integration issues. Once the test environment is ready, this policy will be updated with proper testing guidelines.
+**Requirements:**
+- All functions must have proper type hints (Python 3.10+ syntax)
+- Class attributes should be type-annotated
+- Use `# type: ignore[misc]` for pyright limitations (e.g., iterating over `nn.ModuleList`)
+- Use `typing.cast()` when pyright cannot infer types correctly
+
+### Runtime Testing with uv
+
+After type checking passes, verify functionality using `uv`:
+
+```bash
+# Run a module directly
+uv run python -m models.<module_name>
+
+# Run inline type tests
+uv run python -c "import models.<module_name>; <test_code>"
+
+# Test with both numpy arrays and torch tensors
+uv run python -c "
+import models.<module_name> as mod
+import numpy as np
+import torch
+
+# Test with numpy
+arr = np.array([...])
+result = mod.function(arr)
+print(f'Numpy test: {result.shape}')
+
+# Test with torch
+tensor = torch.tensor([...])
+result = mod.function(tensor)
+print(f'Torch test: {result.shape}')
+"
+```
+
+### Documentation and API Reference
+
+For library documentation and API reference:
+
+1. First check the library's official documentation online
+2. Use the `playwright-cli` skill for web browsing if needed:
+   ```bash
+   # In pi, use playwright-cli skill to browse docs
+   ```
+3. Check type stubs in `typeshed` or the library's source code
+
+### Workflow Summary
+
+1. **Type Check**: Run `uv run pyright <module>.py` - must pass with 0 errors
+2. **Runtime Test**: Run `uv run python -m models.<module>` or inline tests
+3. **Documentation**: Use playwright-cli skill to verify API behavior if unclear
+
+### Examples
+
+```bash
+# Full workflow example
+uv run pyright models/diffusion_policy.py  # Step 1: Type check
+uv run python -m models.diffusion_policy   # Step 2: Run module tests
+```
+
+This ensures code quality through static analysis before runtime validation.
 
 ## Dependencies
 

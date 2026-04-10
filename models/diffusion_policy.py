@@ -83,9 +83,12 @@ class CrossAttentionBlock(nn.Module):
         k, v = torch.chunk(kv, 2, dim=-1)  # Each: (B, num_patches, action_dim)
         
         # Reshape for multi-head attention
-        q = q.reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)  # (B, heads, seq_len, head_dim)
-        k = k.reshape(batch_size, -1, self.num_heads, -1).transpose(1, 2)  # (B, heads, num_patches, head_dim)
-        v = v.reshape(batch_size, -1, self.num_heads, -1).transpose(1, 2)  # (B, heads, num_patches, head_dim)
+        # head_dim must be action_dim // num_heads
+        head_dim = action_dim // self.num_heads
+        num_patches = condition.shape[1]
+        q = q.reshape(batch_size, seq_len, self.num_heads, head_dim).transpose(1, 2)  # (B, heads, seq_len, head_dim)
+        k = k.reshape(batch_size, num_patches, self.num_heads, head_dim).transpose(1, 2)  # (B, heads, num_patches, head_dim)
+        v = v.reshape(batch_size, num_patches, self.num_heads, head_dim).transpose(1, 2)  # (B, heads, num_patches, head_dim)
         
         # Compute attention scores
         attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, heads, seq_len, num_patches)
@@ -167,8 +170,8 @@ class ConditionalUnet1D(nn.Module):
         self.condition_proj = nn.Linear(condition_dim, dim)
         
         # Encoder blocks with cross-attention
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
+        self.encoders: nn.ModuleList = nn.ModuleList()
+        self.decoders: nn.ModuleList = nn.ModuleList()
         
         dims = [dim] + [dim * m for m in dim_mults]
         in_out = list(zip(dims[:-1], dims[1:]))
@@ -176,15 +179,13 @@ class ConditionalUnet1D(nn.Module):
         # Encoder
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= len(in_out) - 1
-            self.encoders.append(
-                nn.ModuleList([
-                    ResnetBlock(dim_in, dim_out, time_embed_dim=dim),
-                    ResnetBlock(dim_out, dim_out, time_embed_dim=dim),
-                    CrossAttentionBlock(dim_out, dim, num_heads=num_heads),
-                    Residual(Attention(dim_out)),
-                    Downsample(dim_out) if not is_last else nn.Identity(),
-                ])
-            )
+            self.encoders.append(nn.ModuleList([
+                ResnetBlock(dim_in, dim_out, time_embed_dim=dim),
+                ResnetBlock(dim_out, dim_out, time_embed_dim=dim),
+                CrossAttentionBlock(dim_out, dim, num_heads=num_heads),
+                Residual(Attention(dim_out)),
+                Downsample(dim_out) if not is_last else nn.Identity(),
+            ]))
         
         # Middle
         mid_dim = dims[-1]
@@ -196,15 +197,13 @@ class ConditionalUnet1D(nn.Module):
         # Decoder
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == len(in_out) - 1
-            self.decoders.append(
-                nn.ModuleList([
-                    ResnetBlock(dim_out * 2, dim_in, time_embed_dim=dim),
-                    ResnetBlock(dim_in, dim_in, time_embed_dim=dim),
-                    CrossAttentionBlock(dim_in, dim, num_heads=num_heads),
-                    Residual(Attention(dim_in)),
-                    Upsample(dim_in) if not is_last else nn.Identity(),
-                ])
-            )
+            self.decoders.append(nn.ModuleList([
+                ResnetBlock(dim_out * 2, dim_in, time_embed_dim=dim),
+                ResnetBlock(dim_in, dim_in, time_embed_dim=dim),
+                CrossAttentionBlock(dim_in, dim, num_heads=num_heads),
+                Residual(Attention(dim_in)),
+                Upsample(dim_in) if not is_last else nn.Identity(),
+            ]))
         
         # Output head
         self.final_conv = nn.Sequential(
@@ -251,35 +250,37 @@ class ConditionalUnet1D(nn.Module):
         condition = self.condition_proj(condition)
         
         # Fuse Time Embedding and Semantic Embedding
-        time_emb = self.time_emb(time)        # (B, dim)
+        # Time encoding: convert scalar time steps to positional embeddings
+        # time shape: (batch_size,) -> (batch_size, dim)
+        time_emb = self._encode_time(time)  # (B, dim)
         sem_emb = self.semantic_proj(semantic_condition)  # (B, dim)
         
         # Broadcasting the semantic intent to all ResNet blocks
         fused_emb = time_emb + sem_emb        # (B, dim)
         
         # Encoder with cross-attention (using fused_emb)
-        skips = []
-        for block1, block2, cross_attn, attn, downsample in self.encoders:
+        skips: List[torch.Tensor] = []
+        for block1, block2, cross_attn, attn, downsample in self.encoders:  # type: ignore[misc]
             x = block1(x, fused_emb)
             x = block2(x, fused_emb)
             x = cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
-            x = attn(x)
+            x = attn(x.transpose(1, 2)).transpose(1, 2)  # Apply self-attention with format conversion
             skips.append(x)
             x = downsample(x)
         
         # Middle with cross-attention (using fused_emb)
         x = self.mid_block1(x, fused_emb)
         x = self.mid_cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
-        x = self.mid_attn(x)
+        x = self.mid_attn(x.transpose(1, 2)).transpose(1, 2)  # Apply self-attention with format conversion
         x = self.mid_block2(x, fused_emb)
         
         # Decoder with cross-attention (using fused_emb)
-        for block1, block2, cross_attn, attn, upsample in self.decoders:
+        for block1, block2, cross_attn, attn, upsample in self.decoders:  # type: ignore[misc]
             x = torch.cat([x, skips.pop()], dim=1)
             x = block1(x, fused_emb)
             x = block2(x, fused_emb)
             x = cross_attn(x.transpose(1, 2), condition).transpose(1, 2)  # Apply cross-attention
-            x = attn(x)
+            x = attn(x.transpose(1, 2)).transpose(1, 2)  # Apply self-attention with format conversion
             x = upsample(x)
         
         # Final output
@@ -287,6 +288,40 @@ class ConditionalUnet1D(nn.Module):
         x = x.transpose(1, 2)  # (B, horizon, output_dim)
         
         return x
+    
+    def _encode_time(self, time: torch.Tensor) -> torch.Tensor:
+        """
+        Encode scalar time steps into positional embeddings.
+        
+        Args:
+            time: Time steps for diffusion
+                Shape: (batch_size,)
+        
+        Returns:
+            Time embeddings
+                Shape: (batch_size, dim)
+        """
+        batch_size = time.shape[0]
+        
+        # Create sinusoidal time encoding
+        # time: (batch_size,) -> (batch_size, 1)
+        time = time.unsqueeze(-1)  # (batch_size, 1)
+        
+        # Compute sinusoidal encodings
+        # Use typing.cast to tell pyright that in_features is an int
+        from typing import cast
+        dim = cast(int, self.time_emb[0].in_features)  # 256
+        div_term = torch.exp(
+            torch.arange(0, dim, 2, device=time.device, dtype=torch.float32) * 
+            (-torch.log(torch.tensor(10000.0)) / dim)
+        )  # (dim//2,)
+        
+        # time_enc: (batch_size, dim)
+        time_enc = torch.zeros(batch_size, dim, device=time.device, dtype=torch.float32)
+        time_enc[:, 0::2] = torch.sin(time * div_term)  # even indices
+        time_enc[:, 1::2] = torch.cos(time * div_term)  # odd indices
+        
+        return time_enc
 
 
 class ResnetBlock(nn.Module):
@@ -510,10 +545,10 @@ class DiffusionPolicy:
     
     def predict_action(
         self,
-        condition: np.ndarray,
-        semantic_condition: np.ndarray,
+        condition: Union[np.ndarray, torch.Tensor],
+        semantic_condition: Union[np.ndarray, torch.Tensor],
         num_inference_steps: int = 50,
-        memory_trajectory: Optional[np.ndarray] = None,
+        memory_trajectory: Optional[Union[np.ndarray, torch.Tensor]] = None,
     ) -> np.ndarray:
         """
         Generate action sequence from V-JEPA dense condition and semantic (language) condition.
@@ -539,13 +574,18 @@ class DiffusionPolicy:
         """
         self.model.eval()
         
-        condition = torch.from_numpy(condition).to(self.device).float()
+        # Convert condition to tensor if needed
+        if isinstance(condition, np.ndarray):
+            condition = torch.from_numpy(condition)
+        condition = condition.to(self.device).float()
         if condition.dim() == 2:
             # Add batch dimension if not present
             condition = condition.unsqueeze(0)
         
-        # Format Semantic Condition
-        sem_tensor = torch.from_numpy(semantic_condition).to(self.device).float()
+        # Convert semantic_condition to tensor if needed
+        if isinstance(semantic_condition, np.ndarray):
+            semantic_condition = torch.from_numpy(semantic_condition)
+        sem_tensor = semantic_condition.to(self.device).float()
         if sem_tensor.dim() == 1:
             sem_tensor = sem_tensor.unsqueeze(0)
         
@@ -558,7 +598,9 @@ class DiffusionPolicy:
         
         # Apply trajectory priming if memory_trajectory is provided
         if memory_trajectory is not None:
-            memory_trajectory = torch.from_numpy(memory_trajectory).to(self.device).float()
+            if isinstance(memory_trajectory, np.ndarray):
+                memory_trajectory = torch.from_numpy(memory_trajectory)
+            memory_trajectory = memory_trajectory.to(self.device).float()
             
             # Handle single trajectory (no batch dimension)
             if memory_trajectory.dim() == 2:
@@ -578,7 +620,7 @@ class DiffusionPolicy:
                 t_tensor = torch.full((batch_size,), int(t), device=self.device, dtype=torch.long)
                 x = self.p_sample(x, t_tensor, condition, sem_tensor)
         
-        return x.cpu().numpy()
+        return x.detach().cpu().numpy()
     
     def save(self, filepath: str) -> None:
         """Save model weights."""
@@ -597,6 +639,11 @@ if __name__ == "__main__":
     # V-JEPA outputs: [batch_size, num_patches, latent_dim]
     num_patches = 14 * 14  # Typical for 384x384 input with 16x16 patches
     condition = np.random.randn(2, num_patches, 1024).astype(np.float32)
-    actions = policy.predict_action(condition, num_inference_steps=10)
+    semantic_condition = np.random.randn(2, 768).astype(np.float32)  # SigLIP embedding
+    actions = policy.predict_action(
+        condition, semantic_condition, num_inference_steps=10
+    )
     print(f"Generated action sequence shape: {actions.shape}")
     print(f"Condition shape: {condition.shape}")
+    print(f"Semantic condition shape: {semantic_condition.shape}")
+
