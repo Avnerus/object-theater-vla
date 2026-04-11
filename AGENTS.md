@@ -300,6 +300,9 @@ uv run python -m models.<module_name>
 # Run inline type tests
 uv run python -c "import models.<module_name>; <test_code>"
 
+# Add pacakges if needed
+uv add <package>
+
 # Test with both numpy arrays and torch tensors
 uv run python -c "
 import models.<module_name> as mod
