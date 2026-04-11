@@ -71,7 +71,7 @@ class InterventionManager:
         if device == "keyboard":
             try:
                 from robosuite.devices import Keyboard
-                self._keyboard_device = Keyboard()  # type: ignore[call-arg]
+                self._keyboard_device = Keyboard(self.client.env.env) 
                 print("[InterventionManager] Keyboard device initialized.")
             except ImportError:
                 print("[InterventionManager] WARNING: robosuite.devices.Keyboard not available.")
@@ -416,7 +416,7 @@ class BodyClient:
 
         for step in range(max_steps):
             # Grab camera frame: typically under 'agentview_image' or 'robot0_agentview_image'
-            frame: Optional[np.ndarray] = obs.get("agentview_image") or obs.get("robot0_agentview_image")
+            frame: Optional[np.ndarray] = obs.get("agentview_image")
             if frame is None:
                 raise KeyError("No camera observation found in observation dict")
 

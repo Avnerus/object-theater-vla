@@ -6,9 +6,6 @@ Implements a Panda arm with OSC_POSE control for tabletop manipulation tasks.
 
 from typing import Dict, Any, Tuple, Optional, List
 import numpy as np
-import torch
-
-from configs.device import DEVICE
 
 import robosuite
 from robosuite import make
