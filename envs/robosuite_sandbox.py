@@ -125,7 +125,7 @@ class RobosuiteSandbox:
             Tuple of (observation, reward, terminated, truncated, info)
         """
         obs, reward, terminated, info = self.env.step(action)
-        # In robosuite 1.5.2, use env.timestep and env.done for episode tracking
+        # In robosuite 1.5.2, use env.timestep for episode tracking
         truncated = self.env.timestep >= self.env.horizon
         return obs, reward, terminated, truncated, info
     
