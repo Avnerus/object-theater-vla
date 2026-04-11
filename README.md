@@ -4,8 +4,10 @@ A Vision-Language-Action (VLA) robotic system designed for zero-bias creative pe
 
 ## Installation
 
+Using `uv` (recommended):
+
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ## Project Structure
@@ -39,9 +41,9 @@ object-theater-vla/
 │   └── __init__.py
 ├── tests/            # Unit tests
 │   └── __init__.py
-├── requirements.txt
-├── LICENSE
-└── README.md
+├── pyproject.toml    # Project metadata and dependencies
+├── LICENSE           # MIT License
+└── README.md         # Project documentation
 ```
 
 ## Usage
@@ -51,7 +53,7 @@ object-theater-vla/
 Record human demonstrations using keyboard or SpaceMouse:
 
 ```bash
-python scripts/01_teleop_demonstrate.py --device keyboard
+uv run python scripts/01_teleop_demonstrate.py --device keyboard
 ```
 
 Controls:
@@ -66,12 +68,12 @@ For production use, the pipeline is split across a client (Body) and server (Bra
 
 **Terminal 1 — Start the Brain (GPU server):**
 ```bash
-python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+uv run python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
 ```
 
 **Terminal 2 — Start the Body (local client):**
 ```bash
-python scripts/04_client_body.py \
+uv run python scripts/04_client_body.py \
     --server tcp://<server-ip>:5555 \
     --task "grasp the red box and place it on the left"
 ```
@@ -92,7 +94,7 @@ Camera frames are JPEG-compressed before transmission. The server maintains a 16
 Train the diffusion policy on collected demonstrations:
 
 ```bash
-python scripts/03_train_diffusion_policy.py \
+uv run python scripts/02_train_diffusion_policy.py \
     --dataset data/demonstrations/demonstrations_20260327_120000.h5 \
     --num-epochs 100 \
     --batch-size 1
@@ -162,6 +164,18 @@ config.training.learning_rate = 1e-4
 - **Device Agnosticism**: Global `DEVICE` variable for PyTorch tensors
 - **Modularity**: Strict separation of concerns
 - **Publication-Ready**: Clean, documented code suitable for research
+
+## Dependencies
+
+All dependencies are managed in `pyproject.toml` using `uv`:
+
+- **Deep Learning Core**: torch, torchvision, triton-rocm (AMD ROCm optimized)
+- **Neural Network Libraries**: transformers, accelerate, diffusers, sentencepiece, protobuf
+- **Memory & Physics**: faiss-cpu, robosuite, h5py
+- **Math & Core Utilities**: numpy, matplotlib, PyYAML, pyzmq, opencv-python
+- **Test Tools**: pyright
+
+Run `uv sync` to install all dependencies.
 
 ## License
 

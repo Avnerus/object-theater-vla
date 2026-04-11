@@ -58,7 +58,7 @@ object-theater-vla/
 │   └── __init__.py
 ├── tests/            # Unit tests (placeholder)
 │   └── __init__.py
-├── requirements.txt  # Python dependencies
+├── pyproject.toml    # Project metadata and dependencies (managed via uv)
 ├── LICENSE           # MIT License
 └── README.md         # Project documentation
 ```
@@ -169,13 +169,13 @@ class TrainingConfig:
 
 ### 1. Record Demonstrations
 ```bash
-python scripts/01_teleop_demonstrate.py --device keyboard
+uv run python scripts/01_teleop_demonstrate.py --device keyboard
 # Press 's' to start, 'e' to end, 'w' to write to HDF5
 ```
 
 ### 2. Train Diffusion Policy
 ```bash
-python scripts/02_train_diffusion_policy.py \
+uv run python scripts/02_train_diffusion_policy.py \
     --dataset data/demonstrations/demonstrations_*.h5 \
     --num-epochs 100
 ```
@@ -186,10 +186,10 @@ Run the distributed Brain/Body system with intervention enabled (default):
 
 ```bash
 # Terminal 1: Start the Brain
-python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+uv run python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
 
 # Terminal 2: Start the Body with intervention
-python scripts/04_client_body.py \
+uv run python scripts/04_client_body.py \
     --server tcp://<server-ip>:5555 \
     --task "grasp the red box"
 ```
@@ -202,7 +202,7 @@ When the robot encounters resistance (EEF force > 15N), it automatically:
 
 To disable intervention:
 ```bash
-python scripts/04_client_body.py \
+uv run python scripts/04_client_body.py \
     --server tcp://<server-ip>:5555 \
     --task "grasp the red box" \
     --no-intervention
@@ -215,12 +215,12 @@ on the server, while the Robosuite simulation with 3D rendering runs locally.
 
 **Terminal 1 — Start the Brain (GPU server):**
 ```bash
-python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+uv run python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
 ```
 
 **Terminal 2 — Start the Body (local client):**
 ```bash
-python scripts/04_client_body.py \
+uv run python scripts/04_client_body.py \
     --server tcp://<server-ip>:5555 \
     --task "grasp the red box"
 ```
@@ -350,20 +350,15 @@ This ensures code quality through static analysis before runtime validation.
 
 ## Dependencies
 
-```bash
-torch>=2.1.0
-torchvision>=0.16.0
-robosuite>=1.5.0
-faiss-cpu>=1.8.0
-transformers>=4.35.0
-diffusers>=0.25.0
-h5py>=3.10.0
-numpy>=1.24.0
-matplotlib>=3.7.0
-PyYAML>=6.0
-pyzmq>=25.0.0
-opencv-python>=4.8.0
-```
+All dependencies are managed in `pyproject.toml` using `uv`:
+
+- **Deep Learning Core**: torch, torchvision, triton-rocm (AMD ROCm optimized)
+- **Neural Network Libraries**: transformers, accelerate, diffusers, sentencepiece, protobuf
+- **Memory & Physics**: faiss-cpu, robosuite, h5py
+- **Math & Core Utilities**: numpy, matplotlib, PyYAML, pyzmq, opencv-python
+- **Test Tools**: pyright
+
+Run `uv sync` to install all dependencies.
 
 ## Future Work
 
@@ -415,5 +410,6 @@ To elevate the Object Theater from a reactive execution system to a proactive le
 
 ---
 
-**Last Updated**: 2026-04-09  
-**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing
+**Last Updated**: 2026-04-11  
+**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing  
+**Dependencies**: Migrated from `requirements.txt` to `pyproject.toml` (managed via `uv`)

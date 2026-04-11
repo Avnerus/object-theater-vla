@@ -72,7 +72,7 @@ class InterventionManager:
         if device == "keyboard":
             try:
                 from robosuite.devices import Keyboard
-                self._keyboard_device = Keyboard()
+                self._keyboard_device = Keyboard()  # type: ignore[call-arg]
                 print("[InterventionManager] Keyboard device initialized.")
             except ImportError:
                 print("[InterventionManager] WARNING: robosuite.devices.Keyboard not available.")
@@ -90,7 +90,7 @@ class InterventionManager:
         """
         eef_force = obs.get("robot0_eef_force", np.zeros(3))
         force_magnitude = np.linalg.norm(eef_force)
-        return force_magnitude > self.force_threshold
+        return bool(force_magnitude > self.force_threshold)
 
     def start_takeover(self) -> None:
         """Initialize takeover mode."""
@@ -228,7 +228,7 @@ class BodyClient:
     def __init__(
         self,
         server_address: str = "tcp://localhost:5555",
-        config: Config = None,
+        config: Optional[Config] = None,
     ):
         """
         Initialise the Body client.
