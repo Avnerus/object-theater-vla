@@ -107,9 +107,10 @@ class RobosuiteSandbox:
                 - robot0_gripper_qpos: Gripper positions
                 - robot0_gripper_qvel: Gripper velocities
                 - object_obs: Object positions and states
+                - robot0_eef_force: End-effector force vector [Fx, Fy, Fz]
         """
         obs = self.env.reset()
-        return obs
+        return self._inject_force_sensor(obs)
     
     def step(
         self, action: np.ndarray
@@ -127,6 +128,7 @@ class RobosuiteSandbox:
         obs, reward, terminated, info = self.env.step(action)
         # In robosuite 1.5.2, use env.timestep for episode tracking
         truncated = self.env.timestep >= self.env.horizon
+        obs = self._inject_force_sensor(obs)
         return obs, reward, terminated, truncated, info
     
     def render(self) -> np.ndarray:
@@ -174,14 +176,26 @@ class RobosuiteSandbox:
             objects.append(obj_info)
         return objects
     
+    def _inject_force_sensor(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Manually extracts EEF force from the robot and adds it to obs."""
+        try:
+            robot = self.env.robots[0]
+            force_dict = robot.ee_force
+            if force_dict:
+                obs["robot0_eef_force"] = list(force_dict.values())[0]
+            else:
+                obs["robot0_eef_force"] = np.zeros(3)
+        except (AttributeError, IndexError):
+            obs["robot0_eef_force"] = np.zeros(3)
+        return obs
+    
     def get_proprioceptive_state(self) -> Dict[str, np.ndarray]:
         """
         Get current proprioceptive state.
 
         Returns:
             Dictionary with joint positions, velocities, gripper state, and EEF pose.
-            Note: Force sensor is not available in robosuite 1.5.2 by default. The force sensor
-            would need to be added via robot configuration or environment modification.
+            Includes real force sensor data from the robot's end-effector.
         """
         obs = self.env._get_observations()
         return {
@@ -191,9 +205,7 @@ class RobosuiteSandbox:
             "gripper_qvel": obs["robot0_gripper_qvel"],
             "eef_pos": obs["robot0_eef_pos"],
             "eef_quat": obs["robot0_eef_quat"],
-            # Note: Force sensor is not available in robosuite 1.5.2 by default
-            # For force sensing, use a different robot variant or add force sensor to robot model
-            "robot0_eef_force": np.zeros(3),  # Placeholder - no force sensor data available
+            "robot0_eef_force": self.get_force_sensor(),
         }
     
     def get_camera_observation(self) -> Dict[str, np.ndarray]:
@@ -221,13 +233,15 @@ class RobosuiteSandbox:
 
         Returns:
             3D force vector [Fx, Fy, Fz] in Newtons.
-        
-        Note: Force sensor is not available in robosuite 1.5.2 by default.
-        Returns zero vector as placeholder. Force sensor would need to be added
-        via robot configuration or environment modification.
         """
-        # Note: Force sensor is not available in robosuite 1.5.2 by default
-        return np.zeros(3)  # Placeholder - no force sensor data available
+        try:
+            robot = self.env.robots[0]
+            force_dict = robot.ee_force
+            if force_dict:
+                return list(force_dict.values())[0]
+        except (AttributeError, IndexError):
+            pass
+        return np.zeros(3)
     
     def set_object_positions(self, positions: np.ndarray) -> None:
         """
