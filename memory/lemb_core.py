@@ -65,7 +65,7 @@ class EpisodicMemoryBuffer:
         semantic_vector: np.ndarray,
         visual_state: np.ndarray,
         action_trajectory: np.ndarray,
-        task_label: str = None,
+        task_label: Optional[str] = None,
     ) -> None:
         """
         Add a new memory chunk to the buffer.
@@ -83,8 +83,8 @@ class EpisodicMemoryBuffer:
             oldest_idx = self.id_to_idx[oldest_id]
             del self.id_to_idx[oldest_id]
             # Remove from list and update indices
-            removed = self.memory_chunks.pop(oldest_idx)
-            for i, _ in enumerate(self.memory_chunks):
+            self.memory_chunks.pop(oldest_idx)
+            for i in range(len(self.memory_chunks)):
                 for k, v in list(self.id_to_idx.items()):
                     if v > oldest_idx:
                         self.id_to_idx[k] = v - 1
@@ -110,7 +110,7 @@ class EpisodicMemoryBuffer:
         
         # Add vector to FAISS index (normalize for cosine similarity)
         vector = semantic_vector / (np.linalg.norm(semantic_vector) + 1e-8)
-        self.index.add(vector.reshape(1, -1))
+        self.index.add(vector.reshape(1, -1))  # type: ignore[misc]
         
         self.total_additions += 1
     
@@ -120,7 +120,7 @@ class EpisodicMemoryBuffer:
         target_semantic_vector: np.ndarray,
         k: int = 3,
         alpha: float = 0.5,
-    ) -> List[Tuple[int, float, np.ndarray]]:
+    ) -> List[Tuple[int, float, np.ndarray, np.ndarray]]:
         """
         Retrieve the most similar action trajectories.
         
@@ -140,7 +140,7 @@ class EpisodicMemoryBuffer:
         visual_vec = query_state / (np.linalg.norm(query_state) + 1e-8)
         
         # Query FAISS index for semantic similarity
-        D_sem, I_sem = self.index.search(semantic_vec.reshape(1, -1), k)
+        D_sem, I_sem = self.index.search(semantic_vec.reshape(1, -1), k)  # type: ignore[misc]
         
         # For visual similarity, we'd need a separate index or compute distances
         # Here we use semantic-based retrieval as the primary method
@@ -226,18 +226,22 @@ class EpisodicMemoryBuffer:
     def save(self, filepath: str) -> None:
         """Save the index and memory data to disk."""
         faiss.write_index(self.index, filepath + ".index")
-        np.savez(
-            filepath + ".data",
-            memory_chunks=self.memory_chunks,
-            id_to_idx=self.id_to_idx,
-        )
+        # Note: memory_chunks and id_to_idx require custom serialization
+        # This is a placeholder - implement actual serialization if needed
+        with open(filepath + ".pkl", "wb") as f:
+            import pickle
+            pickle.dump({"memory_chunks": self.memory_chunks, "id_to_idx": self.id_to_idx}, f)
     
     def load(self, filepath: str) -> None:
         """Load the index and memory data from disk."""
         self.index = faiss.read_index(filepath + ".index")
-        data = np.load(filepath + ".data.npz", allow_pickle=True)
-        self.memory_chunks = data["memory_chunks"].tolist()
-        self.id_to_idx = data["id_to_idx"].tolist()
+        # Note: memory_chunks and id_to_idx require custom deserialization
+        # This is a placeholder - implement actual deserialization if needed
+        with open(filepath + ".pkl", "rb") as f:
+            import pickle
+            data = pickle.load(f)
+            self.memory_chunks = data["memory_chunks"]
+            self.id_to_idx = data["id_to_idx"]
 
 
 # Test the memory buffer
@@ -268,5 +272,5 @@ if __name__ == "__main__":
     
     results = memory.retrieve_closest_trajectory(query_visual, query_semantic, k=3)
     print(f"Retrieved {len(results)} similar trajectories:")
-    for mem_id, score, traj in results:
+    for mem_id, score, traj, visual in results:
         print(f"  Memory {mem_id}: score={score:.4f}, trajectory shape={traj.shape}")
