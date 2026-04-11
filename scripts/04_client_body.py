@@ -31,7 +31,6 @@ import cv2  # type: ignore[import-untyped]
 import numpy as np
 import zmq
 
-from configs.device import DEVICE  # noqa: F401 — kept for module import consistency
 from configs.config import Config, default_config
 from envs.robosuite_sandbox import RobosuiteSandbox
 

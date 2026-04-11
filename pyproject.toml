@@ -11,12 +11,25 @@ explicit = true
 torch = { index = "pytorch-rocm" }
 torchvision = { index = "pytorch-rocm" }
 triton-rocm = { index = "pytorch-rocm" }
+pynput = { git = "https://github.com/Avnerus/pynput.git", rev = "6dd940703e18a31c058fcac17b80b46e021a7cd3" }
 
 [project]
 name = "object-theater-vla"
 version = "0.1.0"
 requires-python = "==3.13.*"
 dependencies = [
+	# Math & Core Utilities (Pinned for compatibility)
+	"numpy>=1.24.0,<2.0.0",
+	"matplotlib>=3.7.0",
+	"PyYAML>=6.0",
+	"pyzmq>=25.0.0",
+	"opencv-python>=4.8.0",
+
+	# Test tools
+	"pyright"
+]
+[dependency-groups]
+server = [
 	# Deep Learning Core (AMD ROCm Optimized)
 	"torch>=2.11.0",
 	"torchvision",
@@ -33,14 +46,8 @@ dependencies = [
 	"faiss-cpu>=1.8.0",
 	"robosuite>=1.5.0",
 	"h5py>=3.10.0",
-
-	# Math & Core Utilities (Pinned for compatibility)
-	"numpy>=1.24.0,<2.0.0",
-	"matplotlib>=3.7.0",
-	"PyYAML>=6.0",
-	"pyzmq>=25.0.0",
-	"opencv-python>=4.8.0",
-
-	# Test tools
-	"pyright"
+]
+client = [
+  "pynput",
+  "robosuite>=1.5.0"
 ]
