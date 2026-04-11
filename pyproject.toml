@@ -41,6 +41,8 @@ server = [
 	"diffusers>=0.27.0",
 	"sentencepiece>=0.2.1",
 	"protobuf>=7.34.1",
+  "timm>=1.0.26",
+  "einops>=0.8.2",
 
 	# Memory & Physics
 	"faiss-cpu>=1.8.0",
@@ -48,6 +50,7 @@ server = [
 	"h5py>=3.10.0",
 ]
 client = [
+  # Use a pynput fork that uses evdev-binary (for running the client on WSL2)
   "pynput",
   "robosuite>=1.5.0"
 ]
