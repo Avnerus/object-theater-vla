@@ -10,13 +10,10 @@ import torch
 
 from configs.device import DEVICE
 
-try:
-    import robosuite
-    from robosuite import make
-    from robosuite.controllers import load_controller_config
-    from robosuite.utils.transformations import quaternion_to_euler
-except ImportError:
-    robosuite = None
+import robosuite
+from robosuite import make
+from robosuite import load_part_controller_config
+from robosuite.utils.transform_utils import mat2euler, quat2mat
 
 
 class RobosuiteSandbox:
@@ -58,9 +55,19 @@ class RobosuiteSandbox:
         self.horizon = horizon
         
         # Load OSC_POSE controller configuration
-        self.controller_config = load_controller_config(default_controller="OSC_POSE")
+        # Note: In robosuite 1.5.2, we need to include gripper config in the controller
+        # The load_part_controller_config returns a dict without gripper, so we need to add it
+        part_controller_config = load_part_controller_config(default_controller="OSC_POSE")
+        part_controller_config["gripper"] = {"type": "GRIP"}
+        self.controller_config = {
+            "type": "BASIC",
+            "body_parts": {
+                "right": part_controller_config
+            }
+        }
         
         # Create the environment with custom settings
+        # Note: robosuite 1.5.2 uses camera_heights/camera_widths instead of render_height/render_width
         self.env = make(
             "Lift",  # Using Lift as base for tabletop manipulation
             robots="Panda",
@@ -68,10 +75,13 @@ class RobosuiteSandbox:
             has_renderer=render_mode == "human",
             has_offscreen_renderer=True,
             render_camera=camera_name,
-            render_height=image_size[0],
-            render_width=image_size[1],
+            render_collision_mesh=False,
+            render_visual_mesh=True,
             control_freq=control_freq,
             horizon=horizon,
+            camera_names=camera_name,
+            camera_heights=image_size[0],
+            camera_widths=image_size[1],
             use_object_obs=True,
             use_camera_obs=True,
             camera_depths=False,  # RGB only for now
@@ -115,7 +125,8 @@ class RobosuiteSandbox:
             Tuple of (observation, reward, terminated, truncated, info)
         """
         obs, reward, terminated, info = self.env.step(action)
-        truncated = self.env._step_count >= self.horizon
+        # In robosuite 1.5.2, use env.timestep and env.done for episode tracking
+        truncated = self.env.timestep >= self.env.horizon
         return obs, reward, terminated, truncated, info
     
     def render(self) -> np.ndarray:
@@ -125,7 +136,7 @@ class RobosuiteSandbox:
         Returns:
             RGB image array of shape (H, W, 3)
         """
-        return self.env.render(camera_name=self.camera_name, height=self.image_size[0], width=self.image_size[1])
+        return self.env.sim.render(width=self.image_size[1], height=self.image_size[0], camera_name=self.camera_name)
     
     def close(self) -> None:
         """Close the environment."""
@@ -139,7 +150,9 @@ class RobosuiteSandbox:
     @property
     def obs_dim(self) -> int:
         """Observation dimension (flattened state vector)."""
-        return sum(self.observation_space["robot0_agentview_image"].shape)
+        # Note: observation_space contains observation specs, not actual data
+        # Use the image shape from the environment's camera
+        return self.image_size[0] * self.image_size[1] * 3
     
     def get_scene_objects(self) -> List[Dict[str, Any]]:
         """
@@ -148,16 +161,17 @@ class RobosuiteSandbox:
         Returns:
             List of object dictionaries with name, type, and position.
         """
-        # The environment has Box, Cylinder, and Sphere objects by default
+        # In robosuite 1.5.2, objects are stored in model.mujoco_objects
+        # Get object positions from the latest observation (more reliable)
+        obs = self.env._get_observations()
         objects = []
-        for obj_name in self.env.model.names:
-            if "object" in obj_name.lower():
-                obj_info = {
-                    "name": obj_name,
-                    "type": self.env.model.body_type(obj_name),
-                    "pos": self.env.model.body_pos(obj_name),
-                }
-                objects.append(obj_info)
+        for obj in self.env.model.mujoco_objects:
+            obj_info = {
+                "name": obj.name,
+                "type": type(obj).__name__,  # e.g., BoxObject, CylinderObject
+                "pos": obs.get(f"{obj.name}_pos", np.zeros(3)),
+            }
+            objects.append(obj_info)
         return objects
     
     def get_proprioceptive_state(self) -> Dict[str, np.ndarray]:
@@ -165,7 +179,9 @@ class RobosuiteSandbox:
         Get current proprioceptive state.
 
         Returns:
-            Dictionary with joint positions, velocities, gripper state, and EEF force.
+            Dictionary with joint positions, velocities, gripper state, and EEF pose.
+            Note: Force sensor is not available in robosuite 1.5.2 by default. The force sensor
+            would need to be added via robot configuration or environment modification.
         """
         obs = self.env._get_observations()
         return {
@@ -175,8 +191,9 @@ class RobosuiteSandbox:
             "gripper_qvel": obs["robot0_gripper_qvel"],
             "eef_pos": obs["robot0_eef_pos"],
             "eef_quat": obs["robot0_eef_quat"],
-            # Access force sensor through the robot's proprioceptive state
-            "robot0_eef_force": obs.get("robot0_eef_force", np.zeros(3)),
+            # Note: Force sensor is not available in robosuite 1.5.2 by default
+            # For force sensing, use a different robot variant or add force sensor to robot model
+            "robot0_eef_force": np.zeros(3),  # Placeholder - no force sensor data available
         }
     
     def get_camera_observation(self) -> Dict[str, np.ndarray]:
@@ -187,10 +204,16 @@ class RobosuiteSandbox:
             Dictionary with RGB images from agent and hand cameras.
         """
         obs = self.env._get_observations()
-        return {
-            "agentview_image": obs["robot0_agentview_image"],
-            "robot0_eye_in_hand_image": obs["robot0_eye_in_hand_image"],
-        }
+        camera_obs = {}
+        # Check if agentview image exists
+        if "agentview_image" in obs:
+            camera_obs["agentview_image"] = obs["agentview_image"]
+        elif "robot0_agentview_image" in obs:
+            camera_obs["agentview_image"] = obs["robot0_agentview_image"]
+        # Check if eye_in_hand image exists
+        if "robot0_eye_in_hand_image" in obs:
+            camera_obs["robot0_eye_in_hand_image"] = obs["robot0_eye_in_hand_image"]
+        return camera_obs
 
     def get_force_sensor(self) -> np.ndarray:
         """
@@ -198,9 +221,13 @@ class RobosuiteSandbox:
 
         Returns:
             3D force vector [Fx, Fy, Fz] in Newtons.
+        
+        Note: Force sensor is not available in robosuite 1.5.2 by default.
+        Returns zero vector as placeholder. Force sensor would need to be added
+        via robot configuration or environment modification.
         """
-        obs = self.env._get_observations()
-        return obs.get("robot0_eef_force", np.zeros(3))
+        # Note: Force sensor is not available in robosuite 1.5.2 by default
+        return np.zeros(3)  # Placeholder - no force sensor data available
     
     def set_object_positions(self, positions: np.ndarray) -> None:
         """
