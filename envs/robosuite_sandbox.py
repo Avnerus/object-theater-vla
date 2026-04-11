@@ -273,15 +273,51 @@ class RobosuiteSandbox:
 
 # Example usage and testing
 if __name__ == "__main__":
+    import numpy as np
+    
     # Initialize environment
     env = RobosuiteSandbox(render_mode="rgb_array")
     
+    print("=== RobosuiteSandbox Force Sensor Test ===")
     print(f"Action space: {env.action_space}")
-    print(f"Observation space: {env.observation_space}")
+    print(f"Action dim: {env.action_dim}")
     
     # Reset and get initial observation
     obs = env.reset()
-    print(f"Initial observation keys: {obs.keys()}")
+    print(f"Initial observation keys: {list(obs.keys())}")
+    
+    # Test force sensor on reset
+    assert "robot0_eef_force" in obs, "Force sensor not in reset observations!"
+    print(f"Force sensor after reset: {obs['robot0_eef_force']}")
+    
+    # Test camera observation
+    camera_obs = env.get_camera_observation()
+    print(f"Camera observation keys: {list(camera_obs.keys())}")
+    assert "agentview_image" in camera_obs, "Agentview image not found!"
+    assert camera_obs["agentview_image"].shape == (224, 224, 3), "Incorrect image shape!"
+    print(f"Camera image shape: {camera_obs['agentview_image'].shape}")
+    
+    # Test proprioceptive state
+    proprio = env.get_proprioceptive_state()
+    print(f"Proprioceptive state keys: {list(proprio.keys())}")
+    assert "robot0_eef_force" in proprio, "Force sensor not in proprio state!"
+    print(f"Proprio force: {proprio['robot0_eef_force']}")
+    
+    # Test force sensor directly
+    force = env.get_force_sensor()
+    print(f"Direct force sensor: {force}")
+    assert force.shape == (3,), "Force vector has incorrect shape!"
+    
+    # Test scene objects
+    objects = env.get_scene_objects()
+    print(f"Scene objects: {len(objects)}")
+    for obj in objects:
+        print(f"  - {obj['name']}: {obj['type']}")
+    
+    # Test render
+    rendered = env.render()
+    print(f"Rendered image shape: {rendered.shape}")
+    assert rendered.shape == (224, 224, 3), "Rendered image has incorrect shape!"
     
     # Take a random action
     action = np.zeros(env.action_dim)
@@ -291,5 +327,10 @@ if __name__ == "__main__":
     obs, reward, terminated, truncated, info = env.step(action)
     print(f"Step result - Reward: {reward}, Terminated: {terminated}, Truncated: {truncated}")
     
-    # Close environment
+    # Test force sensor on step
+    assert "robot0_eef_force" in obs, "Force sensor not in step observations!"
+    print(f"Force sensor after step: {obs['robot0_eef_force']}")
+    
+    # Test close
     env.close()
+    print("\n✓ All force sensor tests passed!")
