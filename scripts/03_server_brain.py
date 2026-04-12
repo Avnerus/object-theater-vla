@@ -138,7 +138,7 @@ class BrainServer:
         prompt = f"""
         Extract the primary action verb and the target objects (nouns) from the user's command.
         Output ONLY a valid JSON dictionary in this exact format.
-        Example: "move the water to the fire" -> {"verb": "move", "nouns": ["water", "fire"]}
+        Example: "move the water to the fire" -> {{"verb": "move", "nouns": ["water", "fire"]}}
         
         Command: "{user_text}"
         """
