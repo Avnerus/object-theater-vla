@@ -118,7 +118,6 @@ class BrainServer:
                 model="Qwen/Qwen2.5-7B-Instruct",
                 device=DEVICE,
                 torch_dtype=torch.float16,
-                max_new_tokens=128,
                 temperature=0.7,
                 do_sample=True,
             )
@@ -137,16 +136,15 @@ class BrainServer:
             return {"verb": user_text, "nouns": []}
         
         prompt = f"""
-        You are a linguistics parser for a robotic arm.
         Extract the primary action verb and the target objects (nouns) from the user's command.
-        Output ONLY a valid JSON dictionary in this exact format:
-        {{"verb": "action_word", "nouns": ["object_1", "object_2"]}}
+        Output ONLY a valid JSON dictionary in this exact format.
+        Example: "move the water to the fire" -> {"verb": "move", "nouns": ["water", "fire"]}
         
         Command: "{user_text}"
         """
         try:
-            # Generate response using the SLM pipeline
-            response = self.slm(prompt, max_new_tokens=50)[0]['generated_text']
+            # Generate response, ensuring we don't return the prompt text
+            response = self.slm(prompt, max_new_tokens=50, return_full_text=False)[0]['generated_text']
             
             # Robustly extract JSON from the output
             import json

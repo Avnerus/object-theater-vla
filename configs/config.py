@@ -37,7 +37,7 @@ class ModelConfig:
     siglip_model_name: str = "google/siglip-base-patch16-224"
     
     # V-JEPA
-    vjepa_latent_dim: int = 1024
+    vjepa_latent_dim: int = 1664
     vjepa_action_dim: int = 7
     vjepa_action_horizon: int = 16
     vjepa_num_layers: int = 4
