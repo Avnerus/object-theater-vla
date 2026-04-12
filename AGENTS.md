@@ -358,7 +358,33 @@ All dependencies are managed in `pyproject.toml` using `uv`:
 - **Math & Core Utilities**: numpy, matplotlib, PyYAML, pyzmq, opencv-python
 - **Test Tools**: pyright
 
-Run `uv sync` to install all dependencies.
+### Dependency Groups
+
+The project uses uv dependency groups to optimize installations:
+
+- **server group**: Contains all GPU-heavy dependencies (torch, transformers, faiss, robosuite, etc.)
+- **client group**: Contains minimal dependencies (pynput, robosuite) for running on WSL2
+
+### Usage Workflow
+
+**For Server (Brain):**
+```bash
+uv sync --group server
+uv run python scripts/03_server_brain.py --bind tcp://0.0.0.0:5555
+```
+
+**For Client (Body):**
+```bash
+uv sync --group client
+uv run python scripts/04_client_body.py --server tcp://<server-ip>:5555 --task "grasp the red box"
+```
+
+**For Development/Training Scripts:**
+```bash
+uv sync  # Installs default dependencies + all groups
+uv run python scripts/01_teleop_demonstrate.py --device keyboard
+uv run python scripts/02_train_diffusion_policy.py --num-epochs 100
+```
 
 ## Future Work
 
