@@ -70,11 +70,13 @@ class InterventionManager:
         self._keyboard_device: Optional[Any] = None
         self._spacemouse_device: Optional[Any] = None
         self._takeover_active = False
+        self._keyboard_bound = False  # Track if we have hijacked the viewer yet
 
         if device == "keyboard":
             try:
                 from robosuite.devices import Keyboard
-                self._keyboard_device = Keyboard(self.client.env.env) 
+                # Standard initialization with env and movement sensitivities
+                self._keyboard_device = Keyboard(self.client.env.env, pos_sensitivity=0.05, rot_sensitivity=0.05) 
                 print("[InterventionManager] Keyboard device initialized.")
             except ImportError:
                 print("[InterventionManager] WARNING: robosuite.devices.Keyboard not available.")
@@ -95,10 +97,26 @@ class InterventionManager:
         return bool(force_magnitude > self.force_threshold)
 
     def start_takeover(self) -> None:
-        """Initialize takeover mode."""
+        """Initialize takeover mode and bind callbacks to the viewer."""
         self._takeover_active = True
         if self._keyboard_device is not None:
             self._keyboard_device.start_control()
+            
+            # --- Hijack the MuJoCo Viewer Callbacks ---
+            if not self._keyboard_bound:
+                try:
+                    viewer = self.client.env.env.viewer
+                    if viewer is not None:
+                        # Pipe window keystrokes directly to our device
+                        viewer.add_keypress_callback("any", self._keyboard_device.on_press)
+                        viewer.add_keyup_callback("any", self._keyboard_device.on_release)
+                        viewer.add_keyrepeat_callback("any", self._keyboard_device.on_press)
+                        self._keyboard_bound = True
+                        print("[InterventionManager] Successfully hijacked viewer keyboard callbacks.")
+                except Exception as e:
+                    print(f"[InterventionManager] WARNING: Could not bind keyboard to viewer: {e}")
+            # ------------------------------------------
+            
         print("INTERVENTION DETECTED: Yielding to human...")
 
     def stop_takeover(self) -> None:
