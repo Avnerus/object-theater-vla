@@ -23,6 +23,9 @@ Asynchronous action chunking
     latency.
 """
 
+import sys
+import select
+
 from collections import deque
 from threading import Thread, Lock
 from typing import Any, Deque, Dict, List, Optional
@@ -352,6 +355,26 @@ class BodyClient:
                     )
                     self._fetcher_thread.start()
 
+    def _poll_terminal(self) -> str:
+        """
+        Non-blocking check for terminal input.
+        Returns the stripped, lowercase string if available, else empty string.
+        """
+        if sys.platform == 'win32':
+            import msvcrt
+            if msvcrt.kbhit():
+                try:
+                    return msvcrt.getche().decode('utf-8').strip().lower()
+                except Exception:
+                    pass
+            return ""
+        
+        # Linux / Mac implementation
+        i, _, _ = select.select([sys.stdin], [], [], 0.0)
+        if i:
+            return sys.stdin.readline().strip().lower()
+        return ""
+
     # ── Execution loop ──────────────────────────────────────────────────
 
     def run_episode(
@@ -423,14 +446,13 @@ class BodyClient:
             # Ensure action buffer has enough actions
             self._ensure_action_buffer(frame)
 
+            # Poll the terminal for user commands
+            term_input = self._poll_terminal()
+
             # Check for force-threshold intervention trigger
             if intervention_manager is not None:
                 force_triggered = intervention_manager.check_force_sensor(obs)
-
-                # Keyboard 'T' key can also trigger intervention (simulated via flag)
-                # In real usage, you'd check keyboard input here
-                # For now, we'll use a simple flag that could be set externally
-                keyboard_triggered = False  # Placeholder for keyboard input check
+                keyboard_triggered = (term_input == 't')
 
                 if force_triggered or keyboard_triggered:
                     intervention_manager.start_takeover()
@@ -471,10 +493,8 @@ class BodyClient:
                         print("[Body] Resuming autonomy from current physical state.")
                     continue
 
-            # Check for chat trigger (keyboard 'C' key)
-            # In real usage, you'd check keyboard input here
-            # For now, we'll use a simple flag that could be set externally
-            chat_triggered = False  # Placeholder for keyboard input check
+            # Check for chat trigger ('c' key)
+            chat_triggered = (term_input == 'c')
 
             if chat_triggered:
                 print("Chat mode enabled. Type 'exit' to return to control.")
