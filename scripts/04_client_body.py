@@ -137,7 +137,9 @@ class InterventionManager:
             or None if intervention failed.
         """
         # Get initial camera frame
-        initial_image = initial_obs.get("agentview_image") or initial_obs.get("robot0_eye_in_hand_image")
+        initial_image = initial_obs.get("agentview_image")
+        if initial_image is None:
+            initial_image = initial_obs.get("robot0_eye_in_hand_image")
         if initial_image is None:
             print("[InterventionManager] ERROR: No camera observation found.")
             return None
