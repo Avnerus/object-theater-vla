@@ -115,9 +115,17 @@ class InterventionManager:
             Action array or None if device unavailable.
         """
         if self._keyboard_device is not None:
-            action = self._keyboard_device.get_input()
-            if action is not None:
-                return action
+            state = self._keyboard_device.get_controller_state()
+            # State contains: pos, orn, grasp, reset
+            # Build action array: [dx, dy, dz, roll, pitch, yaw, gripper]
+            pos = state.get("pos", np.zeros(3))
+            orn = state.get("orn", np.zeros(3))
+            grasp = state.get("grasp", 0)
+            
+            # Map device output to action format
+            # pos → dx, dy, dz; orn → roll, pitch, yaw; grasp → gripper
+            action = np.concatenate([pos, orn, [grasp]]).astype(np.float32)
+            return action
         return None
 
     def record_intervention(
