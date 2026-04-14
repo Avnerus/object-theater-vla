@@ -209,6 +209,7 @@ class InterventionManager:
         # Get task label via SLM chat (zero-bias)
         task_label = "intervention_demo"
         if task_prompt:
+            self.client._exit_raw_mode()  # Suspend raw mode for standard input
             try:
                 print(f"Recorded {len(recorded_actions)} steps.")
                 print("Asking the robot what to call this rule...")
@@ -226,6 +227,8 @@ class InterventionManager:
 
             except EOFError:
                 task_label = "intervention_demo"
+            finally:
+                self.client._enter_raw_mode()  # Resume raw mode
 
         return {
             "initial_image": initial_image_bytes,
@@ -287,6 +290,10 @@ class BodyClient:
         # -------- Safe fallback action (zero velocity) --------
         self._zero_action = np.zeros(self.config.env.diffusion_action_dim, dtype=np.float32)
         self._zero_action[-1] = -1.0  # gripper open
+
+        # -------- Terminal State (for cbreak mode) --------
+        self._fd = sys.stdin.fileno() if sys.platform != 'win32' else None
+        self._old_termios = None
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -376,11 +383,22 @@ class BodyClient:
                     )
                     self._fetcher_thread.start()
 
+    def _enter_raw_mode(self) -> None:
+        """Put the terminal into cbreak mode for instant keystroke reading."""
+        if self._fd is not None:
+            import termios
+            import tty
+            self._old_termios = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
+
+    def _exit_raw_mode(self) -> None:
+        """Restore the terminal to normal canonical mode (requires Enter)."""
+        if self._fd is not None and self._old_termios is not None:
+            import termios
+            termios.tcsetattr(self._fd, termios.TCSANOW, self._old_termios)
+
     def _poll_terminal(self) -> str:
-        """
-        Non-blocking check for instant terminal input (no Enter required).
-        Returns the lowercase character string if available, else empty string.
-        """
+        """Read a single character instantly without toggling termios state."""
         if sys.platform == 'win32':
             import msvcrt
             if msvcrt.kbhit():
@@ -390,22 +408,11 @@ class BodyClient:
                     pass
             return ""
         
-        # Linux / Mac implementation
-        import termios
-        import tty
-        
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            # Drop into cbreak mode to read single characters instantly
-            tty.setcbreak(fd)
-            i, _, _ = select.select([sys.stdin], [], [], 0.0)
-            if i:
-                return sys.stdin.read(1).lower()
-            return ""
-        finally:
-            # ALWAYS restore standard terminal behavior for inputs/printing
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        import select
+        i, _, _ = select.select([sys.stdin], [], [], 0.0)
+        if i:
+            return sys.stdin.read(1).lower()
+        return ""
 
     # ── Execution loop ──────────────────────────────────────────────────
 
@@ -468,7 +475,8 @@ class BodyClient:
         actions_executed: list = []
         rewards: list = []
         keyboard_triggered = False  # For keyboard 'T' intervention trigger
-
+        
+        self._enter_raw_mode()
         for step in range(max_steps):
             # Grab camera frame: typically under 'agentview_image' or 'robot0_agentview_image'
             frame: Optional[np.ndarray] = obs.get("agentview_image")
@@ -529,12 +537,14 @@ class BodyClient:
             chat_triggered = (term_input == 'c')
 
             if chat_triggered:
+                self._exit_raw_mode()  # Suspend raw mode so user can type normally
                 print("Chat mode enabled. Type 'exit' to return to control.")
                 user_msg = input("Talk to the robot: ").strip()
                 if user_msg.lower() != "exit":
                     self.socket.send_pyobj({"type": "chat", "text": user_msg})
                     chat_reply = self.socket.recv_pyobj()
                     print(f"[Robot]: {chat_reply['reply']}\n")
+                self._enter_raw_mode() # Resume raw mode
 
             # Get next action from buffer (or zero action if buffer is empty)
             with self._buffer_lock:
@@ -568,6 +578,8 @@ class BodyClient:
                 if verbose:
                     print(f"  Episode terminated at step {step + 1}")
                 break
+
+        self._exit_raw_mode()  # Restore terminal to normal mode
 
         # ── Statistics ──
         total_reward = float(sum(rewards))
