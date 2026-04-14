@@ -378,23 +378,34 @@ class BodyClient:
 
     def _poll_terminal(self) -> str:
         """
-        Non-blocking check for terminal input.
-        Returns the stripped, lowercase string if available, else empty string.
+        Non-blocking check for instant terminal input (no Enter required).
+        Returns the lowercase character string if available, else empty string.
         """
         if sys.platform == 'win32':
             import msvcrt
             if msvcrt.kbhit():
                 try:
-                    return msvcrt.getche().decode('utf-8').strip().lower()
+                    return msvcrt.getch().decode('utf-8').strip().lower()
                 except Exception:
                     pass
             return ""
         
         # Linux / Mac implementation
-        i, _, _ = select.select([sys.stdin], [], [], 0.0)
-        if i:
-            return sys.stdin.readline().strip().lower()
-        return ""
+        import termios
+        import tty
+        
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            # Drop into cbreak mode to read single characters instantly
+            tty.setcbreak(fd)
+            i, _, _ = select.select([sys.stdin], [], [], 0.0)
+            if i:
+                return sys.stdin.read(1).lower()
+            return ""
+        finally:
+            # ALWAYS restore standard terminal behavior for inputs/printing
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     # ── Execution loop ──────────────────────────────────────────────────
 
