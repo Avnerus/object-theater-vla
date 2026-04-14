@@ -155,8 +155,8 @@ class InterventionManager:
         recorded_actions: List[List[float]] = []
 
         print("[InterventionManager] Recording manual guidance...")
-        print("  - Use keyboard/SpaceMouse to guide the robot")
-        print("  - Press 'ENTER' or release deadman to finish")
+        print("  - Click the 3D window and use W/A/S/D/Q/E to move")
+        print("  - Type 'f' and press ENTER in this terminal to finish recording")
 
         # Enter recording loop
         while True:
@@ -170,6 +170,12 @@ class InterventionManager:
             # Apply action to environment
             obs, reward, terminated, truncated, info = self.client.env.step(action)
             self.client.env.render()
+
+            # --- NEW CODE: Check for manual finish ---
+            if self.client._poll_terminal() == 'f':
+                print("[InterventionManager] Human finished recording early.")
+                break
+            # ----------------------------------------
 
             # Record action
             recorded_actions.append(action.tolist())
