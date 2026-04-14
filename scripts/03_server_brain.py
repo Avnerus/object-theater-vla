@@ -164,10 +164,18 @@ class BrainServer:
     # ── Inference helpers ───────────────────────────────────────────────
 
     def extract_semantic_target(self, text: str) -> np.ndarray:
-        """Encode a natural-language task description into a 768-D embedding."""
+        """Encode a natural-language task description into a flat 768-D numpy array."""
         with torch.no_grad():
             embedding = self.siglip.encode_text(text, normalize=True)
-        return embedding  # [768]
+            
+            # Squeeze the batch dimension [1, 768] -> [768]
+            # Works for both PyTorch tensors and numpy arrays
+            if isinstance(embedding, torch.Tensor):
+                embedding = embedding.squeeze().cpu().numpy()  # type: ignore[union-attr]
+            elif isinstance(embedding, np.ndarray) and embedding.ndim == 2 and embedding.shape[0] == 1:
+                embedding = np.squeeze(embedding)
+                
+        return embedding
 
     def _decode_image(self, jpeg_bytes: bytes, image_size: Tuple[int, int] = (224, 224)) -> torch.Tensor:
         """
@@ -346,7 +354,7 @@ User: """
         memory_traj = self.priming_trajectory
 
         with torch.no_grad():
-            semantic_condition = self.current_semantic_target.cpu().numpy() if torch.is_tensor(self.current_semantic_target) else (self.current_semantic_target if self.current_semantic_target is not None else np.zeros((768,), dtype=np.float32))
+            semantic_condition = self.current_semantic_target if self.current_semantic_target is not None else np.zeros((768,), dtype=np.float32)
             actions = self.diffusion_policy.predict_action(
                 visual_state.cpu().numpy(),  # dense conditioning
                 semantic_condition=semantic_condition,           # language conditioning
