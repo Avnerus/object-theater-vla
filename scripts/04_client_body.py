@@ -70,7 +70,6 @@ class InterventionManager:
         self._keyboard_device: Optional[Any] = None
         self._spacemouse_device: Optional[Any] = None
         self._takeover_active = False
-        self._keyboard_bound = False  # Track if we have hijacked the viewer yet
 
         if device == "keyboard":
             try:
@@ -97,26 +96,14 @@ class InterventionManager:
         return bool(force_magnitude > self.force_threshold)
 
     def start_takeover(self) -> None:
-        """Initialize takeover mode and bind callbacks to the viewer."""
+        """Initialize takeover mode."""
         self._takeover_active = True
         if self._keyboard_device is not None:
-            self._keyboard_device.start_control()
-            
-            # --- Hijack the MuJoCo Viewer Callbacks ---
-            if not self._keyboard_bound:
-                try:
-                    viewer = self.client.env.env.viewer
-                    if viewer is not None:
-                        # Pipe window keystrokes directly to our device
-                        viewer.add_keypress_callback("any", self._keyboard_device.on_press)
-                        viewer.add_keyup_callback("any", self._keyboard_device.on_release)
-                        viewer.add_keyrepeat_callback("any", self._keyboard_device.on_press)
-                        self._keyboard_bound = True
-                        print("[InterventionManager] Successfully hijacked viewer keyboard callbacks.")
-                except Exception as e:
-                    print(f"[InterventionManager] WARNING: Could not bind keyboard to viewer: {e}")
-            # ------------------------------------------
-            
+            # Reset internal state and enable the device
+            self._keyboard_device._reset_internal_state()
+            self._keyboard_device._reset_state = 0
+            self._keyboard_device._enabled = True
+            print("[InterventionManager] Keyboard device enabled.")
         print("INTERVENTION DETECTED: Yielding to human...")
 
     def stop_takeover(self) -> None:
