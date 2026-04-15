@@ -387,14 +387,26 @@ class BodyClient:
         if self._fd is not None:
             import termios
             import tty
+            import atexit  # <-- NEW: Import atexit
+            
+            # Save current settings
             self._old_termios = termios.tcgetattr(self._fd)
+            
+            # Register the safety net BEFORE changing the terminal state
+            atexit.register(self._exit_raw_mode)
+            
+            # Drop into raw mode
             tty.setcbreak(self._fd)
 
     def _exit_raw_mode(self) -> None:
-        """Restore the terminal to normal canonical mode (requires Enter)."""
+        """Restore the terminal to normal canonical mode."""
         if self._fd is not None and self._old_termios is not None:
             import termios
-            termios.tcsetattr(self._fd, termios.TCSANOW, self._old_termios)
+            try:
+                # TCSANOW applies the change instantly
+                termios.tcsetattr(self._fd, termios.TCSANOW, self._old_termios)
+            except Exception:
+                pass  # Swallow exceptions during teardown
 
     def _poll_terminal(self) -> str:
         """Read a single character instantly without toggling termios state."""
