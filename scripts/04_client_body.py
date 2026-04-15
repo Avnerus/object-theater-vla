@@ -109,8 +109,6 @@ class InterventionManager:
     def stop_takeover(self) -> None:
         """End takeover mode."""
         self._takeover_active = False
-        if self._keyboard_device is not None:
-            self._keyboard_device.stop_control()
 
     def read_takeover_action(self) -> Optional[np.ndarray]:
         """
