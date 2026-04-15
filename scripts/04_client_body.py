@@ -119,10 +119,11 @@ class InterventionManager:
         """
         if self._keyboard_device is not None:
             state = self._keyboard_device.get_controller_state()
+            print(f"Controller state: {state}")
             # State contains: pos, orn, grasp, reset
             # Build action array: [dx, dy, dz, roll, pitch, yaw, gripper]
-            pos = state.get("pos", np.zeros(3))
-            orn = state.get("orn", np.zeros(3))
+            pos = state.get("dpos", np.zeros(3))
+            orn = state.get("raw_drotation", np.zeros(3))
             grasp = state.get("grasp", 0)
             
             # Map device output to action format
@@ -158,7 +159,7 @@ class InterventionManager:
         recorded_actions: List[List[float]] = []
 
         print("[InterventionManager] Recording manual guidance...")
-        print("  - Click the 3D window and use W/A/S/D/Q/E to move")
+        print("  - Click the 3D window and use the keyboard to move")
         print("  - Type 'f' and press ENTER in this terminal to finish recording")
 
         # Enter recording loop
