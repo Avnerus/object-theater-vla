@@ -83,7 +83,7 @@ class SigLIPTextEncoder:
             text,
             padding=True,
             truncation=True,
-            max_length=self.tokenizer.model_max_length,
+           # max_length=self.tokenizer.model_max_length,
             return_tensors="pt",
         )
         
