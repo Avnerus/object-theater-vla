@@ -122,8 +122,8 @@ class InterventionManager:
             print(f"Controller state: {state}")
             # State contains: pos, orn, grasp, reset
             # Build action array: [dx, dy, dz, roll, pitch, yaw, gripper]
-            pos = state.get("dpos", np.zeros(3))
-            orn = state.get("raw_drotation", np.zeros(3))
+            pos = state.get("dpos", np.zeros(3)) * 10.0
+            orn = state.get("raw_drotation", np.zeros(3)) * 10.0
             grasp = state.get("grasp", 0)
             
             # Map device output to action format
