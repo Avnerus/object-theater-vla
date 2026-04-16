@@ -11,7 +11,7 @@ OUTPUT_FILE="/tmp/dump_files"
 # Process each file path provided as arguments
 for file_path in "$@"; do
     # Add the file header
-    echo "# $file_path" >> "$OUTPUT_FILE"
+    echo "< $file_path >" >> "$OUTPUT_FILE"
     echo "" >> "$OUTPUT_FILE"
     
     # Add the file contents
