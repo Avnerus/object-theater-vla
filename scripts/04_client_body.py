@@ -135,105 +135,104 @@ class InterventionManager:
     def record_intervention(
         self,
         initial_obs: Dict[str, np.ndarray],
-        task_prompt: bool = True,
-    ) -> Optional[Dict[str, Any]]:
+        task_label: str,
+    ) -> Optional[List[Dict[str, Any]]]:
         """
-        Record a human demonstration during intervention.
+        Record a human demonstration during intervention and split into
+        discrete milestones using kinematic rules.
 
         Args:
             initial_obs: Observation at intervention start.
-            task_prompt: If True, prompt user for task label.
+            task_label: Pre-labeled task description from user intent.
 
         Returns:
-            Dictionary with initial_image, action_trajectory, and task label,
-            or None if intervention failed.
+            List of chunk dictionaries, each with initial_image,
+            action_trajectory, and task, or None if intervention failed.
         """
-        # Get initial camera frame
         initial_image = initial_obs.get("agentview_image")
         if initial_image is None:
-            initial_image = initial_obs.get("robot0_eye_in_hand_image")
-        if initial_image is None:
-            print("[InterventionManager] ERROR: No camera observation found.")
             return None
 
-        recorded_actions: List[List[float]] = []
+        chunks = []
+        current_chunk_actions = []
+        current_start_image = initial_image
+
+        # Kinematic state trackers
+        prev_gripper = -1.0
+        prev_vel = 0.0
+        was_in_contact = False
 
         print("[InterventionManager] Recording manual guidance...")
         print("  - Click the 3D window and use the keyboard to move")
         print("  - Type 'f' and press ENTER in this terminal to finish recording")
 
-        # Enter recording loop
         while True:
-            # Read device action
             action = self.read_takeover_action()
             if action is None:
-                # Fallback: generate small random action for keyboard
                 action = np.zeros(7, dtype=np.float32)
-                action[6] = -1.0  # gripper open
+                action[6] = -1.0
 
-            # Apply action to environment
             obs, reward, terminated, truncated, info = self.client.env.step(action)
             self.client.env.render()
 
-            # --- NEW CODE: Check for manual finish ---
             if self.client._poll_terminal() == 'f':
                 print("[InterventionManager] Human finished recording early.")
                 break
-            # ----------------------------------------
 
-            # Record action
-            recorded_actions.append(action.tolist())
+            current_chunk_actions.append(action.tolist())
 
-            # Check for termination (user signals done via keyboard or timeout)
-            if terminated or truncated:
-                print("[InterventionManager] Episode terminated during intervention.")
-                break
+            # --- Physics Edge Detectors ---
+            curr_gripper = action[6]
+            curr_vel = np.linalg.norm(action[:3])
+            force_mag = np.linalg.norm(obs.get("robot0_eef_force", np.zeros(3)))
+            is_in_contact = force_mag > 15.0
 
-            # Small delay to respect control frequency
+            gripper_switched = abs(curr_gripper - prev_gripper) > 1.0
+            came_to_stop = (curr_vel < 0.05) and (prev_vel >= 0.05)
+            made_contact = is_in_contact and not was_in_contact
+
+            # Chunk if a physical milestone is detected (minimum 15 steps to prevent micro-chunks)
+            if (gripper_switched or came_to_stop or made_contact) and len(current_chunk_actions) >= 15:
+                if current_start_image is not None:
+                    chunks.append({
+                        "initial_image": self.client._compress_frame(current_start_image),
+                        "action_trajectory": np.array(current_chunk_actions, dtype=np.float32),
+                        "task": task_label
+                    })
+                    current_chunk_actions = []
+                    current_start_image = obs.get("agentview_image")
+
+            # Update trackers
+            prev_gripper = curr_gripper
+            prev_vel = curr_vel
+            was_in_contact = is_in_contact
+
             import time
             time.sleep(1.0 / self.client.config.env.control_freq)
 
-            # Simple timeout: limit intervention to reasonable length
-            if len(recorded_actions) >= self.client.config.env.horizon:
-                print("[InterventionManager] Intervention reached max length.")
+            if terminated or truncated:
                 break
 
-        if len(recorded_actions) == 0:
-            print("[InterventionManager] No actions recorded.")
+        # Append the final chunk if it contains data
+        if len(current_chunk_actions) > 0:
+            if current_start_image is not None:
+                chunks.append({
+                    "initial_image": self.client._compress_frame(current_start_image),
+                    "action_trajectory": np.array(current_chunk_actions, dtype=np.float32),
+                    "task": task_label
+                })
+
+        # --- Quality Control (QC) Gate ---
+        self.client._exit_raw_mode()
+        print(f"\n[InterventionManager] Extracted {len(chunks)} physical milestones.")
+        verify = input(f"Was this execution of '{task_label}' successful? (y/n): ").strip().lower()
+        self.client._enter_raw_mode()
+
+        if verify != 'y':
+            print("[InterventionManager] Demonstration discarded. FAISS index protected.")
             return None
 
-        # Compress initial image
-        initial_image_bytes = self.client._compress_frame(initial_image)
-
-        # Get task label via SLM chat (zero-bias)
-        task_label = "intervention_demo"
-        if task_prompt:
-            self.client._exit_raw_mode()  # Suspend raw mode for standard input
-            try:
-                print(f"Recorded {len(recorded_actions)} steps.")
-                print("Asking the robot what to call this rule...")
-
-                # Send chat request to the server
-                self.client.socket.send_pyobj({"type": "chat", "text": "I just finished showing you a new movement. Ask me what to call it."})
-                chat_reply = self.client.socket.recv_pyobj()
-
-                # Print the SLM's dynamically generated question
-                question = chat_reply.get("reply", "What should I call this rule?")
-                print(f"\n[Robot]: {question}\n")
-                task_label = input("> ").strip()
-                if not task_label:
-                    task_label = "intervention_demo"
-
-            except EOFError:
-                task_label = "intervention_demo"
-            finally:
-                self.client._enter_raw_mode()  # Resume raw mode
-
-        return {
-            "initial_image": initial_image_bytes,
-            "action_trajectory": np.array(recorded_actions, dtype=np.float32),
-            "task": task_label,
-        }
+        return chunks
 
 
 class BodyClient:
@@ -506,35 +505,39 @@ class BodyClient:
                 keyboard_triggered = (term_input == 't')
 
                 if force_triggered or keyboard_triggered:
+                    # 1. Pre-Label Intent UX
+                    self._exit_raw_mode()
+                    print("\n[Intervention] Pausing physics engine.")
+                    task_label = input("What are we about to teach the robot? (e.g., 'drop the block'): ").strip()
+                    if not task_label:
+                        task_label = "intervention_demo"
+                    self._enter_raw_mode()
+
+                    # 2. Record & Extract Milestones
                     intervention_manager.start_takeover()
-
-                    # Record the intervention
-                    intervention_data = intervention_manager.record_intervention(obs)
-
-                    if intervention_data is not None:
-                        # ── Dynamic Memory Injection ──
-                        print("[Body] Injecting intervention into Brain's episodic memory...")
-
-                        payload = {
-                            "type": "add_memory",
-                            "task": intervention_data["task"],
-                            "initial_image": intervention_data["initial_image"],
-                            "action_trajectory": intervention_data["action_trajectory"].tolist(),
-                        }
-
-                        # Set longer timeout for memory injection (V-JEPA + FAISS take time)
-                        self.socket.setsockopt(zmq.LINGER, -1)
-                        self.socket.send_pyobj(payload)
-
-                        reply = self.socket.recv_pyobj()
-                        self.socket.setsockopt(zmq.LINGER, 0)
-
-                        if reply.get("status") == "memory_added_successfully":
-                            print("Memory injected. Resuming autonomous rollout.")
-                        else:
-                            print(f"[Body] WARNING: Memory injection failed: {reply}")
-
+                    intervention_chunks = intervention_manager.record_intervention(obs, task_label=task_label)
                     intervention_manager.stop_takeover()
+
+                    # 3. Dynamic Memory Injection (Sequential Milestones)
+                    if intervention_chunks is not None:
+                        print(f"[Body] Injecting {len(intervention_chunks)} milestones into Brain's episodic memory...")
+                        self.socket.setsockopt(zmq.LINGER, -1)
+                        
+                        success_count = 0
+                        for i, chunk in enumerate(intervention_chunks):
+                            payload = {
+                                "type": "add_memory",
+                                "task": chunk["task"],
+                                "initial_image": chunk["initial_image"],
+                                "action_trajectory": chunk["action_trajectory"].tolist(),
+                            }
+                            self.socket.send_pyobj(payload)
+                            reply = self.socket.recv_pyobj()
+                            if reply.get("status") == "memory_added_successfully":
+                                success_count += 1
+                                
+                        self.socket.setsockopt(zmq.LINGER, 0)
+                        print(f"[Body] Successfully injected {success_count}/{len(intervention_chunks)} milestones. Resuming autonomy.")
 
                     # Flush the old action buffer so we don't execute stale movements
                     with self._buffer_lock:
