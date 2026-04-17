@@ -36,8 +36,8 @@ object-theater-vla/
 │   └── __init__.py
 ├── scripts/          # Execution scripts
 │   ├── 01_teleop_demonstrate.py     # Teleop demonstration recorder
-│   ├── 02_train_diffusion_policy.py # Diffusion policy training
 │   ├── 03_server_brain.py           # ZeroMQ VLA inference server (GPU models)
+│   ├── 03_train_diffusion_policy.py # Diffusion policy training with HER (GPU models)
 │   └── 04_client_body.py            # ZeroMQ Robosuite client with intervention support
 ├── utils/            # Utility functions
 │   ├── visualization.py  # Plotting, animation, visualization
@@ -107,6 +107,8 @@ Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
 | Server → Client | `{"action_chunk": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}` |
 | Client → Server | `{"type": "add_memory", "task": "...", "initial_image": ..., "action_trajectory": ...}` |
 | Server → Client | `{"status": "memory_added_successfully"}` |
+| Client → Server | `{"type": "get_trajectory", "visual_state": ..., "goal_state": ...}` |
+| Server → Client | `{"trajectory": [[dx, dy, dz, roll, pitch, yaw, gripper], ...]}` |
 
 - Camera frames are JPEG-compressed with `cv2.imencode` to save bandwidth.
 - The server computes and returns a full 16-action trajectory for each step request.
@@ -119,10 +121,18 @@ Communication uses ZeroMQ REQ/REP with `send_pyobj`/`recv_pyobj` (pickle):
 Train the diffusion policy on collected demonstrations:
 
 ```bash
-uv run python scripts/02_train_diffusion_policy.py \
+uv run python scripts/03_train_diffusion_policy.py \
     --dataset data/demonstrations/demonstrations_*.h5 \
     --num-epochs 100
 ```
+
+**Tri-Modal Training**:
+The diffusion policy now uses three conditioning modalities:
+- **Visual**: V-JEPA dense feature maps via Cross-Attention
+- **Language**: SigLIP semantic embedding fused with time embedding
+- **Goal**: V-JEPA future state via goal projection
+
+The dataset implements Hindsight Experience Replay (HER) to sample future states as goals, enabling goal-conditioned learning.
 
 ## Configuration
 
@@ -205,10 +215,12 @@ class TrainingConfig:
 - **Tri-Modal Conditioning**:
   - **Visual**: V-JEPA dense feature maps via Cross-Attention
   - **Language**: SigLIP semantic embedding fused with time embedding
-  - **Memory**: Historical trajectory via trajectory priming
+  - **Goal**: V-JEPA future state via goal projection (new)
 - Output: 16-step action sequence
 - Diffusion steps: 1000
-- Fuses time + semantic embeddings for semantic guidance in cross-attention
+- **Goal Projection**: 3-layer MLP for V-JEPA goal state conditioning (new)
+- **Fusion**: Time + Semantic + Goal embeddings broadcast to all ResNet blocks (new)
+- **Hindsight Experience Replay (HER)**: Dataset samples future states as goals for goal-conditioned learning (new)
 
 ### Zero-Bias SLM (`scripts/03_server_brain.py`)
 - Model: Qwen2.5-7B-Instruct (7B params) via Hugging Face pipeline
@@ -275,7 +287,7 @@ uv run python scripts/04_client_body.py --server tcp://<server-ip>:5555 --task "
 ```bash
 uv sync  # Installs default dependencies + all groups
 uv run python scripts/01_teleop_demonstrate.py --device keyboard
-uv run python scripts/02_train_diffusion_policy.py --num-epochs 100
+uv run python scripts/03_train_diffusion_policy.py --num-epochs 100
 ```
 
 ## License

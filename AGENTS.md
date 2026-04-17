@@ -41,9 +41,17 @@ Background thread for automated memory scaffolding:
 The diffusion policy uses three conditioning modalities:
 - **Visual**: V-JEPA dense feature maps via Cross-Attention
 - **Language**: SigLIP semantic embedding fused with time embedding
-- **Memory**: Historical trajectory via trajectory priming
+- **Goal**: V-JEPA future state via goal projection
 
-The UNet fuses time embedding with SigLIP semantic embedding, allowing cross-attention (Vision) to be semantically guided when generating actions.
+The UNet fuses all three embeddings (time + semantic + goal), allowing cross-attention (Vision) to be semantically and temporally guided when generating actions.
+
+### Hindsight Experience Replay (HER)
+
+The dataset implements Hindsight Experience Replay for goal-conditioned learning:
+- **Random Goal Sampling**: Future states within trajectory act as goals
+- **Visual State Extraction**: Current V-JEPA patches (196 patches) and future pooled features (1024-dim)
+- **Dataset Output**: Returns `visual_state` [num_patches, latent_dim] and `goal_state` [latent_dim]
+- **Training**: Loss computed with tri-modal inputs (Visual + Language + Goal)
 
 ## Repository Structure
 
@@ -189,10 +197,11 @@ Background thread for automated memory scaffolding:
 - **Tri-Modal Conditioning**:
   - **Visual**: V-JEPA dense feature maps via Cross-Attention
   - **Language**: SigLIP semantic embedding fused with time embedding
-  - **Memory**: Historical trajectory via trajectory priming
+  - **Goal**: V-JEPA future state via goal projection (new)
 - Output: 16-step action sequence
 - Diffusion steps: 1000
-- Fuses time + semantic embeddings for semantic guidance in cross-attention
+- **Goal Projection**: 3-layer MLP for V-JEPA goal state conditioning (new)
+- **Fusion**: Time + Semantic + Goal embeddings broadcast to all ResNet blocks (new)
 
 ### Zero-Bias SLM (`scripts/03_server_brain.py`)
 - Model: Qwen2.5-7B-Instruct (7B params) via Hugging Face pipeline
@@ -241,10 +250,14 @@ uv run python scripts/01_teleop_demonstrate.py --device keyboard
 
 ### 2. Train Diffusion Policy
 ```bash
-uv run python scripts/02_train_diffusion_policy.py \
+uv run python scripts/03_train_diffusion_policy.py \
     --dataset data/demonstrations/demonstrations_*.h5 \
     --num-epochs 100
 ```
+
+**Tri-Modal Training**:
+- Dataset returns `visual_state` (current V-JEPA patches) and `goal_state` (future V-JEPA features)
+- Loss computed with tri-modal inputs: Visual (condition) + Language (semantic) + Goal (goal_condition)
 
 ### 3. Run with Force-Threshold Intervention
 
@@ -449,7 +462,7 @@ uv run python scripts/04_client_body.py --server tcp://<server-ip>:5555 --task "
 ```bash
 uv sync  # Installs default dependencies + all groups
 uv run python scripts/01_teleop_demonstrate.py --device keyboard
-uv run python scripts/02_train_diffusion_policy.py --num-epochs 100
+uv run python scripts/03_train_diffusion_policy.py --num-epochs 100
 ```
 
 ## Future Work
@@ -502,6 +515,6 @@ To elevate the Object Theater from a reactive execution system to a proactive le
 
 ---
 
-**Last Updated**: 2026-04-16  
-**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing + A* Latent Graph Search (The Hippocampus) + Milestone Chunking & Verification UX + Optional Memory Consolidator  
+**Last Updated**: 2026-04-17  
+**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Goal-Conditioned Execution + HER Training + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing + A* Latent Graph Search (The Hippocampus) + Milestone Chunking & Verification UX + Optional Memory Consolidator  
 **Dependencies**: Migrated from `requirements.txt` to `pyproject.toml` (managed via `uv`)
