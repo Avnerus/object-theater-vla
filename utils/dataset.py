@@ -4,7 +4,7 @@ Dataset utilities for Object Theater VLA.
 Provides utilities for loading and preprocessing demonstration data.
 """
 
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Callable, Dict, List, Tuple, Optional
 import numpy as np
 import h5py
 import torch
@@ -23,8 +23,8 @@ class DemonstrationDataset(Dataset):
     def __init__(
         self,
         hdf5_path: str,
-        transform: Optional[callable] = None,
-        device: torch.device = None,
+        transform: Optional[Callable] = None,
+        device: Optional[torch.device] = None,
     ):
         """
         Initialize the demonstration dataset.
@@ -38,8 +38,8 @@ class DemonstrationDataset(Dataset):
         self.transform = transform
         self.device = device or DEVICE
         
-        # Open HDF5 file
-        self.file = h5py.File(hdf5_path, "r")
+        # Open HDF5 file  # type: ignore[misc]
+        self.file = h5py.File(hdf5_path, "r")  # type: ignore[misc]
         
         # Get metadata
         self.num_demonstrations = self.file.attrs.get("num_demonstrations", 0)
@@ -54,21 +54,21 @@ class DemonstrationDataset(Dataset):
         self.trajectories = []
         
         for i in range(self.num_demonstrations):
-            demo_group = self.file[f"demonstration_{i}"]
+            demo_group = self.file[f"demonstration_{i}"]  # type: ignore[index]
             
             # Load observations
-            obs_group = demo_group["observations"]
+            obs_group = demo_group["observations"]  # type: ignore[index]
             observations = []
-            for key in sorted(obs_group.keys(), key=lambda x: int(x.split("_")[1])):
-                step_group = obs_group[key]
-                obs = {k: torch.from_numpy(v[:]) for k, v in step_group.items()}
+            for key in sorted(obs_group.keys(), key=lambda x: int(x.split("_")[1])):  # type: ignore[misc]
+                step_group = obs_group[key]  # type: ignore[index]
+                obs = {k: torch.from_numpy(v[:]) for k, v in step_group.items()}  # type: ignore[misc]
                 observations.append(obs)
             
             # Load actions
-            actions = torch.from_numpy(demo_group["actions"][:])
+            actions = torch.from_numpy(demo_group["actions"][:])  # type: ignore[index]
             
             # Get metadata
-            text_label = demo_group.attrs.get("text_label", "")
+            text_label = demo_group.attrs.get("text_label", "")  # type: ignore[misc]
             
             self.trajectories.append({
                 "observations": observations,
@@ -80,7 +80,7 @@ class DemonstrationDataset(Dataset):
         """Return number of demonstrations."""
         return self.num_demonstrations
     
-    def __getitem__(self, idx: int) -> Dict[str, any]:
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
         Get a demonstration.
         
@@ -151,7 +151,7 @@ class DemonstrationDataset(Dataset):
         """Get all text labels."""
         return [d["text_label"] for d in self.trajectories]
     
-    def get_statistics(self) -> Dict[str, any]:
+    def get_statistics(self) -> Dict[str, Any]:
         """Get dataset statistics."""
         num_steps = sum(len(d["actions"]) for d in self.trajectories)
         action_means = []
@@ -172,7 +172,7 @@ class DemonstrationDataset(Dataset):
     
     def close(self) -> None:
         """Close the HDF5 file."""
-        self.file.close()
+        self.file.close()  # type: ignore[misc]
     
     def __enter__(self):
         return self
@@ -210,8 +210,8 @@ def create_data_loader(
 
 def load_demonstrations(
     hdf5_path: str,
-    device: torch.device = None,
-) -> List[Dict[str, any]]:
+    device: Optional[torch.device] = None,
+) -> List[Dict[str, Any]]:
     """
     Load all demonstrations from HDF5 file.
     
@@ -233,7 +233,7 @@ def load_demonstrations(
 
 
 def split_demonstrations(
-    demonstrations: List[Dict[str, any]],
+    demonstrations: List[Dict[str, Any]],
     train_ratio: float = 0.8,
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,

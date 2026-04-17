@@ -33,9 +33,9 @@ class DiffusionPolicyTrainer:
     
     def __init__(
         self,
-        config: Config = None,
-        model: DiffusionPolicy = None,
-        device: torch.device = None,
+        config: Optional[Config] = None,
+        model: Optional[DiffusionPolicy] = None,
+        device: Optional[torch.device] = None,
     ):
         """
         Initialize the trainer.
@@ -50,7 +50,7 @@ class DiffusionPolicyTrainer:
             latent_dim=self.config.model.vjepa_latent_dim,
             action_dim=self.config.model.diffusion_action_dim,
             action_horizon=self.config.model.vjepa_action_horizon,
-            device=device,
+            device=str(device) if device is not None else None,  # type: ignore[arg-type]
         )
         
         self.device = device or DEVICE
@@ -286,7 +286,7 @@ class DiffusionPolicyTrainer:
     def fit(
         self,
         dataset_path: str,
-        num_epochs: int = None,
+        num_epochs: Optional[int] = None,
         batch_size: int = 1,
         val_interval: int = 5,
     ) -> Dict[str, List[float]]:
@@ -307,9 +307,13 @@ class DiffusionPolicyTrainer:
         # Prepare data
         train_loader, val_loader = self.prepare_data(dataset_path, batch_size)
         
+        # Type: ignore[misc] - Pyright doesn't recognize DataLoader.dataset has __len__
+        train_size = len(train_loader.dataset)  # type: ignore[misc]
+        val_size = len(val_loader.dataset)  # type: ignore[misc]
+        
         print(f"\nStarting training for {num_epochs} epochs...")
-        print(f"  Training samples: {len(train_loader.dataset)}")
-        print(f"  Validation samples: {len(val_loader.dataset)}")
+        print(f"  Training samples: {train_size}")
+        print(f"  Validation samples: {val_size}")
         print(f"  Device: {self.device}")
         print()
         
