@@ -179,11 +179,14 @@ class TrainingConfig:
 - **Force sensor**: `robot0_eef_force` observation (3D vector)
 
 ### Memory (`memory/lemb_core.py`)
-- **FAISS index**: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
-- **Storage**: semantic_vector (768-dim), visual_state, action_trajectory, task_label
-- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`
+- **FAISS indices**: 
+  - Semantic index: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
+  - Visual index: IndexFlatIP (cosine) for spatial graph routing over V-JEPA states
+- **Storage**: semantic_vector (768-dim), visual_state (1664-dim V-JEPA), action_trajectory, task_label
+- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`, `find_latent_path()` (NEW)
 - **Dynamic injection**: New trajectories can be added at runtime via ZeroMQ `add_memory` message
 - **Zero-Bias SLM**: Retrieves all task labels for RAG-based chat responses
+- **A* Latent Graph Search (The Hippocampus)**: Pathfinding over visual milestones for high-level planning
 
 ### SigLIP (`models/siglip_grounding.py`)
 - Model: `google/siglip-base-patch16-224`
@@ -212,6 +215,13 @@ class TrainingConfig:
 - Returns "I don't know" for unknown queries, asks for physical demonstration
 - **Grammar Parsing**: Extracts verbs/nouns for targeted memory routing
 - Used for intervention task labeling and general robot conversation
+
+### A* Latent Graph Search (`scripts/03_server_brain.py`)
+- Visual spatial index for nearest-neighbor search in V-JEPA latent space
+- A* pathfinding algorithm connecting episodic memories
+- Abstract plan generation on task initialization (milestone queue)
+- Milestone arrival recognition via similarity threshold (>0.95 cosine)
+- Step counter tracking progress through milestone queue
 
 ## Design Principles
 

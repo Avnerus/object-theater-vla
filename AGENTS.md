@@ -18,6 +18,15 @@ The system supports real-time human interventions via force-threshold detection:
 - Memory injection happens without stopping the main simulation loop
 - Keyboard device fallback available for manual triggering
 
+### Milestone Chunking & Verification UX
+
+The intervention pipeline now extracts discrete milestones from human guidance:
+- Physics-based chunking using kinematic edge detectors (gripper switching, velocity threshold, contact detection)
+- Minimum 15 steps enforced per chunk to prevent micro-chunks
+- User intent prompt before takeover for accurate task labeling
+- Quality Control (QC) gate: prompts for success verification before memory injection
+- Sequential multi-chunk injection with success counting
+
 ### Tri-Modal Diffusion
 
 The diffusion policy uses three conditioning modalities:
@@ -91,6 +100,34 @@ The server brain now implements a grammar-based task decomposition system:
 3. Verb query → priming trajectory for diffusion policy
 4. Noun queries → visual patches for target conditioning
 5. Diffusion policy generates actions with grammar-guided priming
+
+### A* Latent Graph Search (The Hippocampus) (Recent Update - 2026-04-16)
+
+The system implements high-level planning via visual latent space navigation:
+
+**Visual Indexing (`memory/lemb_core.py`)**
+- FAISS `visual_index` for spatial graph routing over V-JEPA states
+- Dimension: 1664 (V-JEPA 2.1 ViT-Gigantic output)
+- Supports nearest-neighbor search for entry/exit nodes
+
+**A* Pathfinding (`EpisodicMemoryBuffer.find_latent_path()`)**
+- Graph search algorithm over visual memory states
+- Cost = spatial distance (1 - cosine similarity)
+- Heuristic = direct distance to goal state
+- Returns list of visual states representing the path
+
+**Brain Server Integration (`scripts/03_server_brain.py`)**
+- Abstract plan generation on first step: `self.milestone_queue`
+- Milestone arrival recognition: similarity threshold > 0.95
+- Step counter tracking: `self.step_counter`
+
+**Modified Flow**
+1. Task parsed into verb/nouns → priming trajectory + visual patches
+2. Goal visual patch extracted from first noun
+3. A* finds path from current → goal visual state
+4. Milestone queue populated: `self.milestone_queue`
+5. Each step checks milestone arrival via similarity
+6. Queue pops when milestone reached (sim > 0.95)
 
 ### Environment (`envs/robosuite_sandbox.py`)
 - **Robot**: Panda arm
@@ -436,6 +473,6 @@ To elevate the Object Theater from a reactive execution system to a proactive le
 
 ---
 
-**Last Updated**: 2026-04-11  
-**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing  
+**Last Updated**: 2026-04-16  
+**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing + A* Latent Graph Search (The Hippocampus) + Milestone Chunking & Verification UX  
 **Dependencies**: Migrated from `requirements.txt` to `pyproject.toml` (managed via `uv`)
