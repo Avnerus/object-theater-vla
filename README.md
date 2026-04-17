@@ -183,10 +183,11 @@ class TrainingConfig:
   - Semantic index: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
   - Visual index: IndexFlatIP (cosine) for spatial graph routing over V-JEPA states
 - **Storage**: semantic_vector (768-dim), visual_state (1664-dim V-JEPA), action_trajectory, task_label
-- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`, `find_latent_path()` (NEW)
+- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`, `find_latent_path()` (NEW), `fuse_memories()` (NEW)
 - **Dynamic injection**: New trajectories can be added at runtime via ZeroMQ `add_memory` message
 - **Zero-Bias SLM**: Retrieves all task labels for RAG-based chat responses
 - **A* Latent Graph Search (The Hippocampus)**: Pathfinding over visual milestones for high-level planning
+- **Memory Consolidation**: Background thread fuses sequential skills into macro-memories
 
 ### SigLIP (`models/siglip_grounding.py`)
 - Model: `google/siglip-base-patch16-224`
@@ -222,6 +223,13 @@ class TrainingConfig:
 - Abstract plan generation on task initialization (milestone queue)
 - Milestone arrival recognition via similarity threshold (>0.95 cosine)
 - Step counter tracking progress through milestone queue
+
+### Memory Consolidator (`scripts/03_server_brain.py`)
+- Background thread running every 60 seconds (optional, `--enable-consolidator` flag)
+- Scans execution history for consecutive skill chains
+- Uses SLM to generate macro-labels for fused skills
+- Fuses two sequential 16-step trajectories into 32-step macro-memories
+- Auto-increments memory IDs for new macro-skills
 
 ## Design Principles
 

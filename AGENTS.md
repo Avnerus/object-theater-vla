@@ -27,6 +27,15 @@ The intervention pipeline now extracts discrete milestones from human guidance:
 - Quality Control (QC) gate: prompts for success verification before memory injection
 - Sequential multi-chunk injection with success counting
 
+### Optional Memory Consolidator
+
+Background thread for automated memory scaffolding:
+- Runs every 60 seconds when enabled via `--enable-consolidator` CLI flag
+- Scans execution history for consecutive skill chains
+- Uses SLM to generate macro-labels for fused skills
+- Fuses two 16-step trajectories into 32-step macro-memories
+- Tracks successful skill execution for consolidation
+
 ### Tri-Modal Diffusion
 
 The diffusion policy uses three conditioning modalities:
@@ -128,6 +137,26 @@ The system implements high-level planning via visual latent space navigation:
 4. Milestone queue populated: `self.milestone_queue`
 5. Each step checks milestone arrival via similarity
 6. Queue pops when milestone reached (sim > 0.95)
+
+### Memory Consolidator (Recent Update - 2026-04-16)
+
+Background thread for automated memory scaffolding:
+
+**Trajectory Fusion (`EpisodicMemoryBuffer.fuse_memories()`)**
+- Combines two sequential 16-step memories into 32-step macro-memory
+- Uses start visual state of first skill
+- Auto-increments memory IDs for new macro-skills
+
+**Consolidation Loop (`BrainServer._consolidation_loop()`)**
+- Runs every 60 seconds (daemon thread)
+- Grabs last two memories from `execution_history`
+- Uses SLM to generate 2-3 word macro-label
+- Fuses memories and clears history
+
+**Brain Server Integration (`scripts/03_server_brain.py`)**
+- Enabled via `--enable-consolidator` CLI flag
+- Tracks successful skills: `self.execution_history`
+- Runs background thread on initialization
 
 ### Environment (`envs/robosuite_sandbox.py`)
 - **Robot**: Panda arm
@@ -474,5 +503,5 @@ To elevate the Object Theater from a reactive execution system to a proactive le
 ---
 
 **Last Updated**: 2026-04-16  
-**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing + A* Latent Graph Search (The Hippocampus) + Milestone Chunking & Verification UX  
+**Architecture**: Zero-Bias SLM + Tri-Modal Diffusion + Active Compliance + Dynamic Memory Injection + SLM Grammar Parser + Unified LEMB Routing + A* Latent Graph Search (The Hippocampus) + Milestone Chunking & Verification UX + Optional Memory Consolidator  
 **Dependencies**: Migrated from `requirements.txt` to `pyproject.toml` (managed via `uv`)

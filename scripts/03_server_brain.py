@@ -51,6 +51,7 @@ class BrainServer:
         config: Optional[Config] = None,
         memory_buffer: Optional[EpisodicMemoryBuffer] = None,
         num_inference_steps: int = 20,
+        enable_consolidator: bool = False,  # NEW FLAG
     ):
         """
         Initialise the Brain server.
@@ -60,9 +61,11 @@ class BrainServer:
             config: Hyperparameter configuration.
             memory_buffer: Pre populated episodic memory (or None).
             num_inference_steps: Denoising steps for diffusion sampling.
+            enable_consolidator: If True, start background memory consolidation thread.
         """
         self.config = config or default_config
         self.num_inference_steps = num_inference_steps
+        self.enable_consolidator = enable_consolidator
 
         # -------- ZeroMQ socket --------
         self.context = zmq.Context()
@@ -86,6 +89,17 @@ class BrainServer:
         self.priming_trajectory: Optional[np.ndarray] = None
         self.target_visual_patches: List[np.ndarray] = []
         self.milestone_queue: List[np.ndarray] = []  # NEW: Abstract plan queue
+        
+        # -------- Consolidation State --------
+        self.execution_history: List[int] = []  # Tracks memory IDs of successfully executed skills
+        
+        if self.enable_consolidator:
+            import threading
+            self.consolidator_thread = threading.Thread(
+                target=self._consolidation_loop, daemon=True
+            )
+            self.consolidator_thread.start()
+            print("[Brain] Memory Consolidator background thread started.")
 
     # ── Model bootstrapping ────────────────────────────────────────────
 
@@ -306,18 +320,35 @@ User: """
             semantic_vector = self.extract_semantic_target(task)  # [768]
 
             # 5. Add to episodic memory with task label
+            new_memory_id = self.memory.total_additions  # Will be incremented by add_memory
             self.memory.add_memory(
-                memory_id=self.memory.total_additions,
+                memory_id=new_memory_id,
                 semantic_vector=semantic_vector,
                 visual_state=pooled_visual,
                 action_trajectory=action_trajectory,
                 task_label=final_label,
             )
 
+            # 6. Record successful skill for consolidation (if enabled)
+            self._record_successful_skill(new_memory_id)
+
             return {"status": "memory_added_successfully"}
 
         except Exception as e:
             return {"status": "error", "message": str(e)}
+    
+    def _record_successful_skill(self, memory_id: int) -> None:
+        """
+        Record a successfully executed skill for consolidation.
+        
+        Args:
+            memory_id: ID of the memory that was successfully executed.
+        """
+        if self.enable_consolidator:
+            self.execution_history.append(memory_id)
+            # Keep history limited to last 2 entries for pair-wise consolidation
+            if len(self.execution_history) > 2:
+                self.execution_history.pop(0)
 
     def _query_memory(
         self,
@@ -384,6 +415,51 @@ User: """
                 memory_trajectory=memory_traj,
             )
         return actions  # [1, horizon, action_dim]
+    
+    def _consolidation_loop(self) -> None:
+        """
+        Background thread: Periodically scans the execution history.
+        If it finds two skills consistently executed back-to-back, it asks the SLM to name
+        the macro-skill and fuses them in FAISS.
+        """
+        import time
+        while True:
+            time.sleep(60)  # Run the "sleep cycle" every 60 seconds
+            
+            if len(self.execution_history) >= 2:
+                # Grab the last two successfully chained skills
+                id1 = self.execution_history[-2]
+                id2 = self.execution_history[-1]
+                
+                mem1 = self.memory.get_memory_by_id(id1)
+                mem2 = self.memory.get_memory_by_id(id2)
+                
+                if mem1 and mem2:
+                    label1 = mem1.get("task_label", "action_1")
+                    label2 = mem2.get("task_label", "action_2")
+                    
+                    # Ask the SLM to generate a macro-label
+                    prompt = (
+                        f"I just executed '{label1}' followed immediately by '{label2}'. "
+                        f"What is a short, 2-to-3 word name for this combined action?"
+                    )
+                    if self.slm:
+                        try:
+                            result = self.slm(prompt, max_new_tokens=10, return_full_text=False)
+                            macro_label = result[0]['generated_text'].strip()
+                        except Exception:
+                            macro_label = f"{label1}_and_{label2}"
+                    else:
+                        macro_label = f"{label1}_and_{label2}"
+                        
+                    # Generate semantic vector for the new label
+                    macro_semantic = self.extract_semantic_target(macro_label)
+                    
+                    print(f"\n[Consolidator] Fusing '{label1}' + '{label2}' -> '{macro_label}'")
+                    self.memory.fuse_memories(id1, id2, macro_label, macro_semantic)
+                    
+                # Clear history after successful consolidation attempt
+                self.execution_history.clear()
 
     # ── Main loop ───────────────────────────────────────────────────────
 
@@ -506,11 +582,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Brain — VLA model inference server")
     parser.add_argument("--bind", type=str, default="tcp://0.0.0.0:5555", help="ZeroMQ bind address")
     parser.add_argument("--inference-steps", type=int, default=20, help="Diffusion denoising steps")
+    parser.add_argument(
+        "--enable-consolidator",
+        action="store_true",
+        help="Enable background memory scaffolding thread",
+    )
     args = parser.parse_args()
 
     server = BrainServer(
         bind_address=args.bind,
         num_inference_steps=args.inference_steps,
+        enable_consolidator=args.enable_consolidator,
     )
 
     try:

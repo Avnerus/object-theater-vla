@@ -306,6 +306,49 @@ class EpisodicMemoryBuffer:
                 labels.append(label)
         return labels
     
+    def fuse_memories(
+        self,
+        id1: int,
+        id2: int,
+        new_task_label: str,
+        new_semantic_vector: np.ndarray,
+    ) -> Optional[int]:
+        """
+        Combines two sequential memories into a single macro-memory.
+        Uses the start visual state of id1 and concatenates the action trajectories.
+        
+        Args:
+            id1: ID of the first memory (earlier in sequence)
+            id2: ID of the second memory (later in sequence)
+            new_task_label: Name for the fused macro-skill
+            new_semantic_vector: Semantic embedding for the macro-skill
+        
+        Returns:
+            New memory ID if successful, None if either memory is not found
+        """
+        mem1 = self.get_memory_by_id(id1)
+        mem2 = self.get_memory_by_id(id2)
+
+        if not mem1 or not mem2:
+            return None
+
+        # Concatenate the action sequences (e.g., 16 steps + 16 steps = 32 steps)
+        macro_trajectory = np.vstack([mem1["action_trajectory"], mem2["action_trajectory"]])
+        
+        # The start state of the macro-skill is the start state of the first skill
+        macro_visual_state = mem1["visual_state"]
+
+        new_id = self.total_additions  # Auto-increment ID
+        
+        self.add_memory(
+            memory_id=new_id,
+            semantic_vector=new_semantic_vector,
+            visual_state=macro_visual_state,
+            action_trajectory=macro_trajectory,
+            task_label=new_task_label
+        )
+        return new_id
+    
     def clear(self) -> None:
         """Clear all memories from the buffer."""
         self.memory_chunks.clear()
