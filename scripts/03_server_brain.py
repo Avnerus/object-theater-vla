@@ -85,6 +85,7 @@ class BrainServer:
         self.step_counter: int = 0
         self.priming_trajectory: Optional[np.ndarray] = None
         self.target_visual_patches: List[np.ndarray] = []
+        self.milestone_queue: List[np.ndarray] = []  # NEW: Abstract plan queue
 
     # ── Model bootstrapping ────────────────────────────────────────────
 
@@ -344,14 +345,35 @@ User: """
         """
         Full re-plan: extract visual state, query memory, run diffusion.
         Uses priming trajectory from verb retrieval and semantic target.
+        Implements A* latent graph search for milestone-based planning.
 
         Returns a fresh action buffer of shape [1, horizon, action_dim].
         """
         visual_state = self._extract_visual_state(image_tensor)  # [1, patches, 1024]
-        pooled = self._pool_visual_state(visual_state)
+        pooled_visual = self._pool_visual_state(visual_state)
 
         # Use priming trajectory from grammar parsing (verb-based retrieval)
         memory_traj = self.priming_trajectory
+
+        # 1. Generate Abstract Plan on first step
+        if self.step_counter == 0 and self.target_visual_patches:
+            print("[Brain] Calculating A* Latent Graph Path...")
+            goal_visual = self.target_visual_patches[0]
+            self.milestone_queue = self.memory.find_latent_path(
+                pooled_visual, goal_visual, k_edges=5
+            )
+            print(f"[Brain] Path generated: {len(self.milestone_queue)} milestones.")
+
+        # 2. Check Milestone Arrival (The "Recognizer")
+        if self.milestone_queue:
+            current_target = self.milestone_queue[0]
+            sim = np.dot(pooled_visual, current_target) / (
+                np.linalg.norm(pooled_visual) * np.linalg.norm(current_target) + 1e-8
+            )
+            
+            if sim > 0.95:
+                print(f"[Brain] Milestone Reached! (Sim: {sim:.3f}). Popping queue.")
+                self.milestone_queue.pop(0)
 
         with torch.no_grad():
             semantic_condition = self.current_semantic_target if self.current_semantic_target is not None else np.zeros((768,), dtype=np.float32)
@@ -432,6 +454,9 @@ User: """
                 action_chunk = actions.squeeze(0).tolist()  # [horizon, action_dim]
 
                 self.socket.send_pyobj({"action_chunk": action_chunk})
+                
+                # Increment step counter for milestone tracking
+                self.step_counter += 1
 
             elif msg_type == "chat":
                 user_text: str = msg.get("text", "")

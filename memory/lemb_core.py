@@ -39,17 +39,20 @@ class EpisodicMemoryBuffer:
             max_memory_chunks: Maximum number of memory chunks to store
         """
         self.embedding_dim = embedding_dim
+        self.visual_dim = 1664  # V-JEPA latent dimension
         self.use_cosine_similarity = use_cosine_similarity
         self.max_memory_chunks = max_memory_chunks
         
-        # Initialize FAISS index
+        # Initialize FAISS indices
         if use_cosine_similarity:
             # IndexFlatIP uses inner product, which is equivalent to cosine similarity
             # when vectors are normalized
             self.index = faiss.IndexFlatIP(embedding_dim)
+            self.visual_index = faiss.IndexFlatIP(self.visual_dim)  # NEW: Spatial Index
         else:
             # IndexFlatL2 uses Euclidean distance
             self.index = faiss.IndexFlatL2(embedding_dim)
+            self.visual_index = faiss.IndexFlatL2(self.visual_dim)  # NEW: Spatial Index
         
         # Memory storage: each entry contains semantic_vector, visual_state, action_trajectory
         self.memory_chunks: List[Dict[str, np.ndarray]] = []
@@ -108,9 +111,13 @@ class EpisodicMemoryBuffer:
         self.memory_chunks.append(memory_entry)
         self.id_to_idx[memory_id] = len(self.memory_chunks) - 1
         
-        # Add vector to FAISS index (normalize for cosine similarity)
+        # Add vector to FAISS semantic index
         vector = semantic_vector / (np.linalg.norm(semantic_vector) + 1e-8)
         self.index.add(vector.reshape(1, -1))  # type: ignore[misc]
+        
+        # NEW: Add vector to FAISS visual index
+        vis_vector = visual_state / (np.linalg.norm(visual_state) + 1e-8)
+        self.visual_index.add(vis_vector.reshape(1, -1))  # type: ignore[misc]
         
         self.total_additions += 1
     
@@ -189,6 +196,96 @@ class EpisodicMemoryBuffer:
                     break
         return results_with_visual
     
+    def find_latent_path(
+        self,
+        current_visual: np.ndarray,
+        goal_visual: np.ndarray,
+        k_edges: int = 5,
+    ) -> List[np.ndarray]:
+        """
+        A* Graph Search over the FAISS visual memory.
+        Finds a sequence of V-JEPA milestones connecting the current state to the goal.
+        
+        Args:
+            current_visual: Current V-JEPA visual state vector
+            goal_visual: Target V-JEPA visual state vector
+            k_edges: Number of nearest neighbors to consider for graph edges
+        
+        Returns:
+            List of visual state vectors representing the path from current to goal
+        """
+        import heapq
+        
+        if self.size == 0:
+            return []
+
+        # Normalize inputs
+        curr_norm = current_visual / (np.linalg.norm(current_visual) + 1e-8)
+        goal_norm = goal_visual / (np.linalg.norm(goal_visual) + 1e-8)
+
+        # 1. Find entry and exit nodes in the memory graph
+        _, start_idx = self.visual_index.search(curr_norm.reshape(1, -1), 1)  # type: ignore[misc]
+        _, end_idx = self.visual_index.search(goal_norm.reshape(1, -1), 1)  # type: ignore[misc]
+
+        start_node = start_idx[0][0]
+        end_node = end_idx[0][0]
+
+        if start_node < 0 or end_node < 0:
+            return []
+
+        # 2. A* Search setup
+        frontier = []
+        heapq.heappush(frontier, (0.0, start_node))
+        came_from = {start_node: None}
+        cost_so_far = {start_node: 0.0}
+        
+        end_mem_visual = self.memory_chunks[end_node]["visual_state"]
+
+        # 3. Graph traversal
+        while frontier:
+            _, current = heapq.heappop(frontier)
+
+            if current == end_node:
+                break
+
+            # Find spatial neighbors to act as graph edges
+            curr_mem_visual = self.memory_chunks[current]["visual_state"]
+            curr_mem_norm = curr_mem_visual / (np.linalg.norm(curr_mem_visual) + 1e-8)
+            D, I = self.visual_index.search(curr_mem_norm.reshape(1, -1), k_edges + 1)  # type: ignore[misc]
+
+            for i in range(1, len(I[0])):  # skip self (index 0)
+                next_node = I[0][i]
+                if next_node < 0: 
+                    continue
+                
+                # Cost is spatial distance (1 - cosine similarity)
+                weight = 1.0 - D[0][i]
+                new_cost = cost_so_far[current] + weight
+
+                if next_node not in cost_so_far or new_cost < cost_so_far[next_node]:
+                    cost_so_far[next_node] = new_cost
+                    
+                    # Heuristic: Distance from next_node directly to end_node
+                    next_mem_visual = self.memory_chunks[next_node]["visual_state"]
+                    sim = np.dot(next_mem_visual, end_mem_visual) / (
+                        np.linalg.norm(next_mem_visual) * np.linalg.norm(end_mem_visual) + 1e-8
+                    )
+                    heuristic = 1.0 - sim
+                    
+                    priority = new_cost + heuristic
+                    heapq.heappush(frontier, (priority, next_node))
+                    came_from[next_node] = current
+
+        # 4. Reconstruct Path
+        path = []
+        curr = end_node
+        while curr is not None:
+            path.append(self.memory_chunks[curr]["visual_state"])
+            curr = came_from.get(curr)
+        
+        path.reverse()
+        return path
+    
     def get_memory_by_id(self, memory_id: int) -> Optional[Dict[str, np.ndarray]]:
         """Retrieve a specific memory chunk by ID."""
         idx = self.id_to_idx.get(memory_id)
@@ -246,14 +343,14 @@ class EpisodicMemoryBuffer:
 
 # Test the memory buffer
 if __name__ == "__main__":
-    # Create a memory buffer
+    # Create a memory buffer (visual_dim matches V-JEPA 2.1 output)
     memory = EpisodicMemoryBuffer(embedding_dim=768, use_cosine_similarity=True)
     
     # Add some dummy memories
     for i in range(10):
         semantic_vec = np.random.randn(768).astype(np.float32)
         semantic_vec /= np.linalg.norm(semantic_vec)
-        visual_state = np.random.randn(512).astype(np.float32)
+        visual_state = np.random.randn(1664).astype(np.float32)  # V-JEPA 2.1 dimension
         action_trajectory = np.random.randn(16, 7).astype(np.float32)
         
         memory.add_memory(
@@ -268,9 +365,16 @@ if __name__ == "__main__":
     # Retrieve
     query_semantic = np.random.randn(768).astype(np.float32)
     query_semantic /= np.linalg.norm(query_semantic)
-    query_visual = np.random.randn(512).astype(np.float32)
+    query_visual = np.random.randn(1664).astype(np.float32)  # V-JEPA 2.1 dimension
     
     results = memory.retrieve_closest_trajectory(query_visual, query_semantic, k=3)
     print(f"Retrieved {len(results)} similar trajectories:")
     for mem_id, score, traj, visual in results:
         print(f"  Memory {mem_id}: score={score:.4f}, trajectory shape={traj.shape}")
+    
+    # Test A* pathfinding
+    print("\nTesting A* Latent Graph Search...")
+    current = np.random.randn(1664).astype(np.float32)
+    goal = np.random.randn(1664).astype(np.float32)
+    path = memory.find_latent_path(current, goal, k_edges=3)
+    print(f"  Path length: {len(path)} milestones")
