@@ -159,21 +159,25 @@ class DiffusionPolicyTrainer:
         noise: torch.Tensor,
         t: torch.Tensor,
         condition: torch.Tensor,
+        semantic_condition: torch.Tensor,  # NEW
+        goal_condition: torch.Tensor,      # NEW
     ) -> torch.Tensor:
         """
-        Compute training loss.
+        Compute training loss with tri-modal inputs.
         
         Args:
             noisy_x: Noisy action sequence
             noise: Ground truth noise
             t: Timesteps
-            condition: Conditioning vector
+            condition: V-JEPA visual condition
+            semantic_condition: SigLIP text embedding
+            goal_condition: V-JEPA goal state
         
         Returns:
             Loss value
         """
-        # Predict noise
-        noise_pred = self.model.model(noisy_x, t, condition)
+        # Predict noise using tri-modal inputs (Visual + Language + Goal)
+        noise_pred = self.model.model(noisy_x, t, condition, semantic_condition, goal_condition)
         
         # MSE loss
         loss = nn.functional.mse_loss(noise_pred, noise)
@@ -199,18 +203,22 @@ class DiffusionPolicyTrainer:
         
         for batch in train_loader:
             # Get data
-            actions = batch["actions"]
+            actions = batch["actions"].to(self.device)
+            visual_state = batch["visual_state"].to(self.device).float()
+            goal_state = batch["goal_state"].to(self.device).float()
             text_label = batch["text_label"]
             
-            # Encode text to get condition
-            condition = self.model.siglip.encode_text(text_label, normalize=True)
-            condition = torch.from_numpy(condition).to(self.device).float()
+            # Encode text to get semantic condition
+            semantic_condition = self.model.siglip.encode_text(text_label, normalize=True)
+            if isinstance(semantic_condition, np.ndarray):
+                semantic_condition = torch.from_numpy(semantic_condition)
+            semantic_condition = semantic_condition.to(self.device).float()
             
             # Forward diffusion
             noisy_x, noise, t = self.forward_diffusion(actions)
             
-            # Compute loss
-            loss = self.compute_loss(noisy_x, noise, t, condition)
+            # Compute loss with tri-modal inputs
+            loss = self.compute_loss(noisy_x, noise, t, visual_state, semantic_condition, goal_state)
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -253,14 +261,19 @@ class DiffusionPolicyTrainer:
         num_batches = 0
         
         for batch in val_loader:
-            actions = batch["actions"]
+            actions = batch["actions"].to(self.device)
+            visual_state = batch["visual_state"].to(self.device).float()
+            goal_state = batch["goal_state"].to(self.device).float()
             text_label = batch["text_label"]
             
-            condition = self.model.siglip.encode_text(text_label, normalize=True)
-            condition = torch.from_numpy(condition).to(self.device).float()
+            # Encode text to get semantic condition
+            semantic_condition = self.model.siglip.encode_text(text_label, normalize=True)
+            if isinstance(semantic_condition, np.ndarray):
+                semantic_condition = torch.from_numpy(semantic_condition)
+            semantic_condition = semantic_condition.to(self.device).float()
             
             noisy_x, noise, t = self.forward_diffusion(actions)
-            loss = self.compute_loss(noisy_x, noise, t, condition)
+            loss = self.compute_loss(noisy_x, noise, t, visual_state, semantic_condition, goal_state)
             
             total_loss += loss.item()
             num_batches += 1

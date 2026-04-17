@@ -99,6 +99,52 @@ class DemonstrationDataset(Dataset):
         # Move tensors to device
         demo["actions"] = demo["actions"].to(self.device)
         
+        # HER: Randomly select a future index within the same trajectory to act as the goal
+        # Extract visual states from observations
+        observations = demo["observations"]
+        trajectory_length = len(observations)
+        
+        # Sample current and future indices for HER
+        current_idx = np.random.randint(0, trajectory_length - 16)
+        future_idx = np.random.randint(current_idx + 1, trajectory_length)
+        
+        # Extract current visual state (V-JEPA patches from observations)
+        current_obs = observations[current_idx]
+        # Assuming visual_state key exists in observations
+        if "vjepa_patches" in current_obs:
+            current_vjepa_patches = current_obs["vjepa_patches"]
+        elif "visual_state" in current_obs:
+            current_vjepa_patches = current_obs["visual_state"]
+        else:
+            # Fallback: try to find any tensor that looks like visual features
+            for key, value in current_obs.items():
+                if isinstance(value, torch.Tensor) and value.dim() >= 2:
+                    current_vjepa_patches = value
+                    break
+            else:
+                # Create dummy if no visual features found
+                current_vjepa_patches = torch.zeros(196, 1024)  # Default 14x14 patches
+        
+        # Extract goal visual state (future pooled V-JEPA)
+        future_obs = observations[future_idx]
+        if "vjepa_pooled" in future_obs:
+            future_vjepa_pooled = future_obs["vjepa_pooled"]
+        elif "visual_state" in future_obs:
+            future_vjepa_pooled = future_obs["visual_state"]
+        else:
+            # Fallback: use first available tensor
+            for key, value in future_obs.items():
+                if isinstance(value, torch.Tensor) and value.dim() == 1:
+                    future_vjepa_pooled = value
+                    break
+            else:
+                # Create dummy if no visual features found
+                future_vjepa_pooled = torch.zeros(1024)
+        
+        # Add goal state to demo
+        demo["visual_state"] = current_vjepa_patches  # [num_patches, latent_dim]
+        demo["goal_state"] = future_vjepa_pooled      # [latent_dim]
+        
         return demo
     
     def get_text_labels(self) -> List[str]:

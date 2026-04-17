@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from configs.device import DEVICE
+from models.siglip_grounding import SigLIPTextEncoder
 
 
 class CrossAttentionBlock(nn.Module):
@@ -125,6 +126,7 @@ class ConditionalUnet1D(nn.Module):
         dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
         condition_dim: int = 1024,  # V-JEPA latent dimension (per patch)
         semantic_dim: int = 768,    # SigLIP text embedding dimension
+        goal_dim: int = 1024,       # NEW: V-JEPA goal dimension
         num_heads: int = 8,
     ):
         """
@@ -162,6 +164,13 @@ class ConditionalUnet1D(nn.Module):
         # Semantic projection (for language conditioning)
         self.semantic_proj = nn.Sequential(
             nn.Linear(semantic_dim, dim * 4),
+            nn.GELU(),
+            nn.Linear(dim * 4, dim),
+        )
+        
+        # NEW: Goal projection (for latent milestone conditioning)
+        self.goal_proj = nn.Sequential(
+            nn.Linear(goal_dim, dim * 4),
             nn.GELU(),
             nn.Linear(dim * 4, dim),
         )
@@ -217,6 +226,7 @@ class ConditionalUnet1D(nn.Module):
         time: torch.Tensor,
         condition: torch.Tensor,
         semantic_condition: torch.Tensor,
+        goal_condition: torch.Tensor,  # NEW
     ) -> torch.Tensor:
         """
         Forward pass with tri-modal conditioning (Visual + Language + Memory).
@@ -249,14 +259,15 @@ class ConditionalUnet1D(nn.Module):
         # condition: (B, num_patches, condition_dim) -> (B, num_patches, dim)
         condition = self.condition_proj(condition)
         
-        # Fuse Time Embedding and Semantic Embedding
+        # Fuse Time Embedding, Semantic Embedding, and Goal Embedding
         # Time encoding: convert scalar time steps to positional embeddings
         # time shape: (batch_size,) -> (batch_size, dim)
         time_emb = self._encode_time(time)  # (B, dim)
         sem_emb = self.semantic_proj(semantic_condition)  # (B, dim)
+        goal_emb = self.goal_proj(goal_condition)  # NEW: (B, dim)
         
-        # Broadcasting the semantic intent to all ResNet blocks
-        fused_emb = time_emb + sem_emb        # (B, dim)
+        # Broadcasting the tri-modal intent to all ResNet blocks
+        fused_emb = time_emb + sem_emb + goal_emb  # NEW: Tri-modal intent fusion (B, dim)
         
         # Encoder with cross-attention (using fused_emb)
         skips: List[torch.Tensor] = []
@@ -456,6 +467,9 @@ class DiffusionPolicy:
         self.action_dim = action_dim
         self.action_horizon = action_horizon
         
+        # Initialize SigLIP text encoder for semantic embeddings
+        self.siglip = SigLIPTextEncoder(device=device)
+        
         # Initialize UNet with Cross-Attention
         self.model = ConditionalUnet1D(
             input_dim=action_dim,
@@ -463,6 +477,7 @@ class DiffusionPolicy:
             horizon=action_horizon,
             condition_dim=latent_dim,
             semantic_dim=768,  # SigLIP text embedding dimension
+            goal_dim=latent_dim,  # NEW: V-JEPA goal dimension
         )
         self.model.to(device)
         
@@ -516,10 +531,16 @@ class DiffusionPolicy:
         t: torch.Tensor,
         condition: torch.Tensor,
         semantic_condition: torch.Tensor,
+        goal_condition: Optional[torch.Tensor] = None,  # NEW
     ) -> torch.Tensor:
         """Single denoising step with tri-modal conditioning."""
-        # Predict noise using tri-modal inputs (Visual + Language)
-        noise_pred = self.model(x, t, condition, semantic_condition)
+        # Predict noise using tri-modal inputs (Visual + Language + Goal)
+        # If goal_condition is None, use zero tensor
+        if goal_condition is None:
+            goal_condition = torch.zeros(
+                condition.shape[0], condition.shape[-1], device=condition.device
+            )
+        noise_pred = self.model(x, t, condition, semantic_condition, goal_condition)
         
         # Compute x_0 prediction
         alphas_cumprod_t = self.alphas_cumprod[t]
@@ -549,6 +570,7 @@ class DiffusionPolicy:
         semantic_condition: Union[np.ndarray, torch.Tensor],
         num_inference_steps: int = 50,
         memory_trajectory: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        goal_condition: Optional[Union[np.ndarray, torch.Tensor]] = None,  # NEW
     ) -> np.ndarray:
         """
         Generate action sequence from V-JEPA dense condition and semantic (language) condition.
@@ -556,7 +578,7 @@ class DiffusionPolicy:
         Tri-Modal Generation:
         - Visual: V-JEPA dense feature map (condition)
         - Language: SigLIP semantic embedding (semantic_condition)
-        - Memory: Historical trajectory (via trajectory priming)
+        - Goal: V-JEPA goal state (goal_condition)
         
         Args:
             condition: V-JEPA dense feature map
@@ -567,6 +589,8 @@ class DiffusionPolicy:
             memory_trajectory: Historical trajectory to prime the diffusion process
                 Shape: (action_horizon, action_dim) or (batch_size, action_horizon, action_dim)
                 If provided, the initial noise is biased toward this trajectory
+            goal_condition: V-JEPA goal state for goal-conditioned generation
+                Shape: (batch_size, latent_dim) or (latent_dim,)
         
         Returns:
             Generated action sequence
@@ -588,6 +612,15 @@ class DiffusionPolicy:
         sem_tensor = semantic_condition.to(self.device).float()
         if sem_tensor.dim() == 1:
             sem_tensor = sem_tensor.unsqueeze(0)
+        
+        # NEW: Convert goal_condition to tensor if needed
+        goal_tensor: Optional[torch.Tensor] = None
+        if goal_condition is not None:
+            if isinstance(goal_condition, np.ndarray):
+                goal_condition = torch.from_numpy(goal_condition)
+            goal_tensor = goal_condition.to(self.device).float()
+            if goal_tensor.dim() == 1:
+                goal_tensor = goal_tensor.unsqueeze(0)
         
         batch_size = condition.shape[0]
         
@@ -618,7 +651,7 @@ class DiffusionPolicy:
         with torch.no_grad():
             for t in timesteps:
                 t_tensor = torch.full((batch_size,), int(t), device=self.device, dtype=torch.long)
-                x = self.p_sample(x, t_tensor, condition, sem_tensor)
+                x = self.p_sample(x, t_tensor, condition, sem_tensor, goal_tensor)
         
         return x.detach().cpu().numpy()
     
@@ -640,10 +673,12 @@ if __name__ == "__main__":
     num_patches = 14 * 14  # Typical for 384x384 input with 16x16 patches
     condition = np.random.randn(2, num_patches, 1024).astype(np.float32)
     semantic_condition = np.random.randn(2, 768).astype(np.float32)  # SigLIP embedding
+    goal_condition = np.random.randn(2, 1024).astype(np.float32)  # NEW: V-JEPA goal state
     actions = policy.predict_action(
-        condition, semantic_condition, num_inference_steps=10
+        condition, semantic_condition, num_inference_steps=10, goal_condition=goal_condition
     )
     print(f"Generated action sequence shape: {actions.shape}")
     print(f"Condition shape: {condition.shape}")
     print(f"Semantic condition shape: {semantic_condition.shape}")
+    print(f"Goal condition shape: {goal_condition.shape}")
 
