@@ -15,8 +15,8 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 | 1a | Tapered hollow backbone (TPU 95A) | 1 | ~405 mm length, tapered from base to tip, fixed inner diameter (~4.5 mm for endoscope/tool routing). Parametric CAD via Inventor iLogic scripts (paper Appendix). |
 | 1b | Rigid discs, friction-fit (TPU or PLA) | ~20–30 | Disc count depends on design. Tapered radii, logarithmic spacing. Each has 3 equidistant tendon-routing holes + 1 central tool hole. Lofted between holes for mass reduction. |
 | 1c | Soft gripper — 6-finger, Φ=20° (TPU 95A) | 1 | 20% infill recommended. Helical tendon routing, single traverse per finger. Flat interior edges angled 20°. |
-| 1d | Electronics base housing (PLA/PETG) | 1 | Hollow cylindrical enclosure, houses 3 motors + load cells + spools. Mounting flange for quadruped/arm. |
-| 1e | Motor mount hinges & spools | 3 | Printed as part of actuation assembly. |
+| 1d | Electronics base housing (PLA/PETG) | 1 | Hollow cylindrical enclosure, houses 4 motors + load cells + spools. Mounting flange for quadruped/arm. |
+| 1e | Motor mount hinges & spools | 4 | Printed as part of actuation assembly. |
 | 1f | Gripper base / tool coupling | 1 | Couples gripper tendon to backbone central channel. |
 
 **TPU Filament:**
@@ -29,10 +29,10 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 
 | # | Item | Qty | Specs |
 |---|------|-----|-------|
-| 2a | Dynamixel XH430-210T servo motors | 3 | 2.0 A max current, 3.5 kg·cm stall torque, 210°/s speed, 1024-bit resolution. ~$120 each. |
-| 2b | FX29 compression load cells | 3 | 5 kg capacity, 0–5 kg range, analog output. ~$25–35 each. |
-| 2c | Motor spools (3D-printed or machined) | 3 | Custom, sized for tendon diameter + ~20 wraps. |
-| 2d | Hinge pins / bearings | 3 | For motor-to-load-cell force transmission. |
+| 2a | Dynamixel XH430-W210T servo motors | 4 | 2.0 A max current, 3.5 kg·cm stall torque, 210°/s speed, 1024-bit resolution. Operated in current mode. ~$120 each. |
+| 2b | FX29 compression load cells | 3 | 5 kg capacity, 0–5 kg range, analog output. ~$25–35 each. (One per body tendon; gripper tendon may not need load cell.) |
+| 2c | Motor spools (3D-printed or machined) | 4 | Custom, sized for tendon diameter + ~20 wraps. |
+| 2d | Hinge pins / bearings | 4 | For motor-to-load-cell force transmission (3 body + 1 gripper). |
 
 ---
 
@@ -42,7 +42,7 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 |---|------|-----|-------|
 | 3a | Main actuation tendons (Fishing line or Kevlar) | 3 | 0.5–1.0 mm diameter, high tensile strength, low stretch. ~405 mm each + spool margin. |
 | 3b | Gripper actuation tendon | 1 | Same material, routed through backbone center to gripper. Helical routing in gripper. |
-| 3c | Dynamixel power/data cable (5-pin) | 3 | Standard DXL 5-pin JST-SH cables, appropriate length. |
+| 3c | Dynamixel power/data cable (5-pin) | 4 | Standard DXL 5-pin JST-SH cables, appropriate length. |
 | 3d | Load cell wiring | 3 | Shielded 4-wire (excitation + signal). |
 | 3e | Endoscopic camera cable (optional) | 1 | For 4.5 mm endoscope routing through backbone. |
 
@@ -54,7 +54,7 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 |---|------|-----|-------|
 | 4a | Dynamixel controller / USB2DXL | 1 | Dynamixel2Arduino or OpenCR board for motor control. ~$50–80. |
 | 4b | Microcontroller (Arduino/Raspberry Pi) | 1 | Main controller. RPi Zero 2W or Raspberry Pi 4 for WiFi teleoperation. |
-| 4c | ADC for load cells (HX711 or similar) | 1 | 24-bit, 3-channel (one per load cell). ~$5. |
+| 4c | ADC for load cells (HX711 or similar) | 1 | 24-bit, 3-channel (one per body load cell). ~$5. |
 | 4d | Power distribution board | 1 | 12V in, 5V/12V out for motors + logic. |
 | 4e | LiPo battery / power supply | 1 | 11.1V 2200mAh or similar, sized for motor current draw. |
 | 4f | WiFi router (optional) | 1 | For remote teleoperation over UDP (per paper). |
@@ -98,7 +98,7 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 | Category | Low | High |
 |----------|-----|------|
 | TPU filament | $30 | $60 |
-| Dynamixel XH430-210T × 3 | $360 | $400 |
+| Dynamixel XH430-W210T × 4 | $480 | $530 |
 | FX29 load cells × 3 | $75 | $105 |
 | Microcontroller + DXL controller | $70 | $130 |
 | HX711 ADC + electronics | $15 | $30 |
@@ -106,7 +106,7 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 | Mechanical hardware | $20 | $40 |
 | Power supply / battery | $25 | $50 |
 | Optional endoscope | $30 | $100 |
-| **TOTAL** | **~$635** | **~$940** |
+| **TOTAL** | **~$755** | **~$1,070** |
 
 *Excludes 3D printer cost (assumed available).*
 
@@ -123,7 +123,7 @@ All printed via FDM. TPU 95A for backbone + gripper; PLA/PETG optional for rigid
 - **Gripper actuation force:** ~10 N (at 20% infill)
 - **Total system mass:** ~900 g (with all components)
 - **Max height from mount:** 183 mm (folded)
-- **Motors:** Dynamixel XH430-210T (×3)
+- **Motors:** Dynamixel XH430-W210T (×4): 3 for body tendons + 1 for gripper tendon, all operated in current mode
 - **Load cells:** FX29, 5 kg (×3)
 
 ---
