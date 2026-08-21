@@ -2,6 +2,72 @@
 
 A Vision-Language-Action (VLA) robotic system designed for zero-bias creative pedagogy.
 
+See related [blog post](https://blog.avner.us/object-theater-for-ai-agents).
+
+## Architecture
+### Environment (`envs/robosuite_sandbox.py`)
+- **Robot**: Panda arm
+- **Controller**: OSC_POSE (Operational Space Control)
+- **Scene**: Tabletop with 3 manipulable objects (Box, Cylinder, Sphere)
+- **Observations**: RGB camera (agentview), proprioceptive state, force-torque sensor
+- **Action space**: 7-dim (dx, dy, dz, roll, pitch, yaw, gripper)
+- **Force sensor**: `robot0_eef_force` observation (3D vector)
+
+### Memory (`memory/lemb_core.py`)
+- **FAISS indices**: 
+  - Semantic index: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
+  - Visual index: IndexFlatIP (cosine) for spatial graph routing over V-JEPA states
+- **Storage**: semantic_vector (768-dim), visual_state (1664-dim V-JEPA), action_trajectory, task_label
+- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`, `find_latent_path()` (NEW), `fuse_memories()` (NEW)
+- **Dynamic injection**: New trajectories can be added at runtime via ZeroMQ `add_memory` message
+- **Zero-Bias SLM**: Retrieves all task labels for RAG-based chat responses
+- **A* Latent Graph Search (The Hippocampus)**: Pathfinding over visual milestones for high-level planning
+- **Memory Consolidation**: Background thread fuses sequential skills into macro-memories
+
+### SigLIP (`models/siglip_grounding.py`)
+- Model: `google/siglip-base-patch16-224`
+- Output: 768-dim normalized text embedding
+- Methods: `encode_text()`, `encode_batch()`
+
+### V-JEPA (`models/v_jepa_encoder.py`)
+- Model: V-JEPA 2.1 ViT-Gigantic (2B params) via `torch.hub.load('facebookresearch/vjepa2', ...)`
+- Dense patch-level feature extraction (not just CLS token)
+- Frozen encoder — acts as a fixed perception engine
+- Preprocessor: official `vjepa2_preprocessor`
+
+### Diffusion Policy (`models/diffusion_policy.py`)
+- Architecture: Conditional 1D UNet with Cross-Attention
+- **Tri-Modal Conditioning**:
+  - **Visual**: V-JEPA dense feature maps via Cross-Attention
+  - **Language**: SigLIP semantic embedding fused with time embedding
+  - **Goal**: V-JEPA future state via goal projection (new)
+- Output: 16-step action sequence
+- Diffusion steps: 1000
+- **Goal Projection**: 3-layer MLP for V-JEPA goal state conditioning (new)
+- **Fusion**: Time + Semantic + Goal embeddings broadcast to all ResNet blocks (new)
+- **Hindsight Experience Replay (HER)**: Dataset samples future states as goals for goal-conditioned learning (new)
+
+### Zero-Bias SLM (`scripts/03_server_brain.py`)
+- Model: Qwen2.5-7B-Instruct (7B params) via Hugging Face pipeline
+- Zero-bias prompt: strictly grounded in Episodic Memory Buffer
+- Returns "I don't know" for unknown queries, asks for physical demonstration
+- **Grammar Parsing**: Extracts verbs/nouns for targeted memory routing
+- Used for intervention task labeling and general robot conversation
+
+### A* Latent Graph Search (`scripts/03_server_brain.py`)
+- Visual spatial index for nearest-neighbor search in V-JEPA latent space
+- A* pathfinding algorithm connecting episodic memories
+- Abstract plan generation on task initialization (milestone queue)
+- Milestone arrival recognition via similarity threshold (>0.95 cosine)
+- Step counter tracking progress through milestone queue
+
+### Memory Consolidator (`scripts/03_server_brain.py`)
+- Background thread running every 60 seconds (optional, `--enable-consolidator` flag)
+- Scans execution history for consecutive skill chains
+- Uses SLM to generate macro-labels for fused skills
+- Fuses two sequential 16-step trajectories into 32-step macro-memories
+- Auto-increments memory IDs for new macro-skills
+
 ## Installation
 
 Using `uv` (recommended):
@@ -179,69 +245,6 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     num_epochs: int = 100
 ```
-
-### Environment (`envs/robosuite_sandbox.py`)
-- **Robot**: Panda arm
-- **Controller**: OSC_POSE (Operational Space Control)
-- **Scene**: Tabletop with 3 manipulable objects (Box, Cylinder, Sphere)
-- **Observations**: RGB camera (agentview), proprioceptive state, force-torque sensor
-- **Action space**: 7-dim (dx, dy, dz, roll, pitch, yaw, gripper)
-- **Force sensor**: `robot0_eef_force` observation (3D vector)
-
-### Memory (`memory/lemb_core.py`)
-- **FAISS indices**: 
-  - Semantic index: IndexFlatIP (cosine) or IndexFlatL2 (Euclidean)
-  - Visual index: IndexFlatIP (cosine) for spatial graph routing over V-JEPA states
-- **Storage**: semantic_vector (768-dim), visual_state (1664-dim V-JEPA), action_trajectory, task_label
-- **Methods**: `add_memory()`, `retrieve_closest_trajectory()`, `get_all_task_labels()`, `find_latent_path()` (NEW), `fuse_memories()` (NEW)
-- **Dynamic injection**: New trajectories can be added at runtime via ZeroMQ `add_memory` message
-- **Zero-Bias SLM**: Retrieves all task labels for RAG-based chat responses
-- **A* Latent Graph Search (The Hippocampus)**: Pathfinding over visual milestones for high-level planning
-- **Memory Consolidation**: Background thread fuses sequential skills into macro-memories
-
-### SigLIP (`models/siglip_grounding.py`)
-- Model: `google/siglip-base-patch16-224`
-- Output: 768-dim normalized text embedding
-- Methods: `encode_text()`, `encode_batch()`
-
-### V-JEPA (`models/v_jepa_encoder.py`)
-- Model: V-JEPA 2.1 ViT-Gigantic (2B params) via `torch.hub.load('facebookresearch/vjepa2', ...)`
-- Dense patch-level feature extraction (not just CLS token)
-- Frozen encoder — acts as a fixed perception engine
-- Preprocessor: official `vjepa2_preprocessor`
-
-### Diffusion Policy (`models/diffusion_policy.py`)
-- Architecture: Conditional 1D UNet with Cross-Attention
-- **Tri-Modal Conditioning**:
-  - **Visual**: V-JEPA dense feature maps via Cross-Attention
-  - **Language**: SigLIP semantic embedding fused with time embedding
-  - **Goal**: V-JEPA future state via goal projection (new)
-- Output: 16-step action sequence
-- Diffusion steps: 1000
-- **Goal Projection**: 3-layer MLP for V-JEPA goal state conditioning (new)
-- **Fusion**: Time + Semantic + Goal embeddings broadcast to all ResNet blocks (new)
-- **Hindsight Experience Replay (HER)**: Dataset samples future states as goals for goal-conditioned learning (new)
-
-### Zero-Bias SLM (`scripts/03_server_brain.py`)
-- Model: Qwen2.5-7B-Instruct (7B params) via Hugging Face pipeline
-- Zero-bias prompt: strictly grounded in Episodic Memory Buffer
-- Returns "I don't know" for unknown queries, asks for physical demonstration
-- **Grammar Parsing**: Extracts verbs/nouns for targeted memory routing
-- Used for intervention task labeling and general robot conversation
-
-### A* Latent Graph Search (`scripts/03_server_brain.py`)
-- Visual spatial index for nearest-neighbor search in V-JEPA latent space
-- A* pathfinding algorithm connecting episodic memories
-- Abstract plan generation on task initialization (milestone queue)
-- Milestone arrival recognition via similarity threshold (>0.95 cosine)
-- Step counter tracking progress through milestone queue
-
-### Memory Consolidator (`scripts/03_server_brain.py`)
-- Background thread running every 60 seconds (optional, `--enable-consolidator` flag)
-- Scans execution history for consecutive skill chains
-- Uses SLM to generate macro-labels for fused skills
-- Fuses two sequential 16-step trajectories into 32-step macro-memories
-- Auto-increments memory IDs for new macro-skills
 
 ## Design Principles
 
